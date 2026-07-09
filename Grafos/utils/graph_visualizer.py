@@ -12,7 +12,7 @@ class GraphVisualizer:
     Esta clase se reutilizará en distintos apartados de la wiki.
     Inicialmente mostraba grafos básicos. Ahora también permite mostrar
     grafos mixtos con información al pasar el ratón por encima de nodos
-    y aristas.
+    y aristas, y colecciones de grafos para comparar distintos tipos.
     """
 
     def __init__(self, figsize=(8, 5)):
@@ -36,7 +36,6 @@ class GraphVisualizer:
         width = max_x - min_x
         height = max_y - min_y
 
-        # Evita problemas si todos los nodos quedan alineados.
         if width == 0:
             width = 1.0
         if height == 0:
@@ -45,7 +44,6 @@ class GraphVisualizer:
         center_x = (min_x + max_x) / 2
         center_y = (min_y + max_y) / 2
 
-        # Usamos el mayor rango para que el grafo quede proporcionado.
         max_range = max(width, height)
 
         half_range = max_range / 2
@@ -62,6 +60,73 @@ class GraphVisualizer:
 
         ax.set_aspect("equal", adjustable="box")
 
+    def _draw_manual_node_labels(self, ax, graph, pos, font_size=9):
+        """
+        Dibuja las etiquetas de los nodos manualmente para controlar zorder.
+        """
+
+        for node, (x, y) in pos.items():
+            ax.text(
+                x,
+                y,
+                str(node),
+                ha="center",
+                va="center",
+                fontsize=font_size,
+                fontweight="bold",
+                color="black",
+                zorder=30,
+            )
+
+    def _draw_manual_edge_labels(self, ax, graph, pos, font_size=8):
+        """
+        Dibuja las etiquetas de peso manualmente.
+
+        Esto evita que los pesos queden debajo de las aristas y permite
+        desplazar ligeramente el texto respecto al centro de la arista.
+        """
+
+        edge_labels = nx.get_edge_attributes(graph, "weight")
+
+        if not edge_labels:
+            return
+
+        for (u, v), weight in edge_labels.items():
+            x1, y1 = pos[u]
+            x2, y2 = pos[v]
+
+            mx = (x1 + x2) / 2
+            my = (y1 + y2) / 2
+
+            dx = x2 - x1
+            dy = y2 - y1
+
+            length = (dx**2 + dy**2) ** 0.5
+
+            if length == 0:
+                offset_x = 0.0
+                offset_y = 0.0
+            else:
+                offset_x = -dy / length * 0.16
+                offset_y = dx / length * 0.16
+
+            ax.text(
+                mx + offset_x,
+                my + offset_y,
+                str(weight),
+                fontsize=font_size,
+                ha="center",
+                va="center",
+                color="black",
+                zorder=40,
+                bbox={
+                    "boxstyle": "round,pad=0.18",
+                    "fc": "white",
+                    "ec": "none",
+                    "alpha": 0.95,
+                },
+            )
+
     def show_graph(
         self,
         graph,
@@ -71,12 +136,6 @@ class GraphVisualizer:
     ):
         """
         Muestra un grafo básico usando NetworkX y Matplotlib.
-
-        Parámetros:
-        - graph: grafo de NetworkX.
-        - title: título de la figura.
-        - save_path: ruta opcional para guardar la imagen.
-        - layout_seed: semilla para que el dibujo sea reproducible.
         """
 
         pos = nx.spring_layout(graph, seed=layout_seed)
@@ -119,6 +178,136 @@ class GraphVisualizer:
 
         plt.show()
 
+    def show_graph_collection(
+        self,
+        graph_examples,
+        title="Tipos de grafos",
+        save_path=None,
+        layout_seed=7,
+        rows=2,
+        cols=3,
+    ):
+        """
+        Muestra varios grafos en una misma ventana.
+
+        Esta función está pensada para comparar visualmente distintos
+        tipos de grafos.
+        """
+
+        fig, axes = plt.subplots(
+            rows,
+            cols,
+            figsize=self.figsize,
+        )
+
+        fig.suptitle(title, fontsize=14, fontweight="bold")
+
+        axes = axes.flatten()
+
+        # Tamaño reducido para que dentro de cada subplot las aristas se vean.
+        node_size = 520
+
+        # Valor pequeño para que las flechas no se queden solo como triángulos.
+        directed_shrink = 8
+
+        for index, example in enumerate(graph_examples):
+            ax = axes[index]
+
+            graph = example["graph"]
+            graph_title = example["title"]
+            description = example.get("description", "")
+
+            pos = example.get("pos")
+
+            if pos is None:
+                pos = nx.spring_layout(graph, seed=layout_seed, k=2.0)
+
+            ax.set_title(graph_title, fontsize=11, fontweight="bold")
+            ax.axis("off")
+
+            # 1. Dibujar aristas.
+            if graph.is_directed():
+                for u, v in graph.edges():
+                    x1, y1 = pos[u]
+                    x2, y2 = pos[v]
+
+                    arrow = FancyArrowPatch(
+                        (x1, y1),
+                        (x2, y2),
+                        arrowstyle="-|>",
+                        mutation_scale=18,
+                        linewidth=2.2,
+                        color="black",
+                        shrinkA=directed_shrink,
+                        shrinkB=directed_shrink,
+                        zorder=20,
+                    )
+
+                    ax.add_patch(arrow)
+            else:
+                for u, v in graph.edges():
+                    x1, y1 = pos[u]
+                    x2, y2 = pos[v]
+
+                    ax.plot(
+                        [x1, x2],
+                        [y1, y2],
+                        linewidth=2.2,
+                        color="black",
+                        zorder=10,
+                    )
+
+            # 2. Dibujar nodos.
+            node_collection = nx.draw_networkx_nodes(
+                graph,
+                pos,
+                node_size=node_size,
+                ax=ax,
+            )
+            node_collection.set_zorder(15)
+
+            # 3. Etiquetas de nodos.
+            self._draw_manual_node_labels(
+                ax,
+                graph,
+                pos,
+                font_size=9,
+            )
+
+            # 4. Etiquetas de pesos.
+            self._draw_manual_edge_labels(
+                ax,
+                graph,
+                pos,
+                font_size=8,
+            )
+
+            if description:
+                ax.text(
+                    0.5,
+                    -0.08,
+                    description,
+                    transform=ax.transAxes,
+                    ha="center",
+                    va="top",
+                    fontsize=8,
+                )
+
+            self._set_centered_limits(ax, pos, margin=0.45)
+
+        for empty_index in range(len(graph_examples), len(axes)):
+            axes[empty_index].axis("off")
+
+        plt.tight_layout()
+
+        if save_path is not None:
+            save_path = Path(save_path)
+            save_path.parent.mkdir(parents=True, exist_ok=True)
+            plt.savefig(save_path, dpi=200, bbox_inches="tight")
+            print(f"Imagen guardada en: {save_path}")
+
+        plt.show()
+
     def show_mixed_graph_with_info(
         self,
         graph,
@@ -131,29 +320,11 @@ class GraphVisualizer:
         """
         Muestra un grafo mixto y permite ver información al pasar el ratón
         por encima de nodos y aristas.
-
-        Este método está pensado para grafos donde algunas aristas son
-        dirigidas y otras no dirigidas.
-
-        Convención usada:
-        - Si una arista tiene data["directed"] = True, se dibuja con flecha.
-        - Si una arista tiene data["directed"] = False, se dibuja como línea.
-        - El peso de la arista se lee desde data["weight"].
-
-        Parámetros:
-        - graph: normalmente un nx.MultiDiGraph.
-        - node_info: diccionario con información calculada de cada nodo.
-        - edge_info: diccionario con información calculada de cada arista.
-        - title: título de la figura.
-        - save_path: ruta opcional para guardar la imagen.
-        - layout_seed: semilla para que el dibujo sea reproducible.
         """
 
         node_info = node_info or {}
         edge_info = edge_info or {}
 
-        # Para calcular posiciones usamos una versión no múltiple del grafo.
-        # Así evitamos problemas visuales si en el futuro hay varias aristas.
         layout_graph = nx.Graph()
         layout_graph.add_nodes_from(graph.nodes())
 
@@ -166,7 +337,6 @@ class GraphVisualizer:
         ax.set_title(title)
         ax.axis("off")
 
-        # Dibujar nodos.
         node_x = [pos[node][0] for node in graph.nodes()]
         node_y = [pos[node][1] for node in graph.nodes()]
 
@@ -189,7 +359,6 @@ class GraphVisualizer:
                 zorder=4,
             )
 
-        # Dibujar aristas.
         edge_artists = []
 
         for u, v, key, data in graph.edges(keys=True, data=True):
@@ -220,7 +389,6 @@ class GraphVisualizer:
                 )
                 artist = line
 
-            # Etiqueta del peso.
             if weight is not None:
                 mx = (x1 + x2) / 2
                 my = (y1 + y2) / 2
@@ -253,10 +421,8 @@ class GraphVisualizer:
                 }
             )
 
-        # Centrar el grafo después de dibujar nodos y aristas.
         self._set_centered_limits(ax, pos, margin=0.45)
 
-        # Tooltip interactivo.
         annotation = ax.annotate(
             "",
             xy=(0, 0),
@@ -286,8 +452,6 @@ class GraphVisualizer:
 
         annotation.set_visible(False)
 
-        # Volvemos a fijar límites después de crear la anotación para evitar
-        # que matplotlib tenga en cuenta la anotación invisible al autoescalar.
         self._set_centered_limits(ax, pos, margin=0.45)
 
         def format_node_text(node):
@@ -341,10 +505,10 @@ class GraphVisualizer:
             ap_x = p[0] - a[0]
             ap_y = p[1] - a[1]
 
-            length_squared = ab_x ** 2 + ab_y ** 2
+            length_squared = ab_x**2 + ab_y**2
 
             if length_squared == 0:
-                return ((p[0] - a[0]) ** 2 + (p[1] - a[1]) ** 2) ** 0.5
+                return ((p[0] - a[0])**2 + (p[1] - a[1])**2) ** 0.5
 
             t = (ap_x * ab_x + ap_y * ab_y) / length_squared
             t = max(0, min(1, t))
@@ -354,7 +518,7 @@ class GraphVisualizer:
                 a[1] + t * ab_y,
             )
 
-            return ((p[0] - projection[0]) ** 2 + (p[1] - projection[1]) ** 2) ** 0.5
+            return ((p[0] - projection[0])**2 + (p[1] - projection[1])**2) ** 0.5
 
         def on_mouse_move(event):
             if event.inaxes != ax or event.xdata is None or event.ydata is None:
@@ -364,7 +528,6 @@ class GraphVisualizer:
 
             mouse_point = (event.xdata, event.ydata)
 
-            # Primero comprobar si el ratón está sobre un nodo.
             for node, node_position in pos.items():
                 if distance_pixels(mouse_point, node_position) < 30:
                     annotation.xy = node_position
@@ -380,7 +543,6 @@ class GraphVisualizer:
                     fig.canvas.draw_idle()
                     return
 
-            # Después comprobar si está cerca de una arista.
             for edge in edge_artists:
                 distance = point_to_segment_distance_pixels(
                     mouse_point,
