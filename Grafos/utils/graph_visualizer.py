@@ -2,17 +2,20 @@ from pathlib import Path
 
 import matplotlib.pyplot as plt
 import networkx as nx
-from matplotlib.patches import FancyArrowPatch
+from matplotlib.patches import FancyArrowPatch, Rectangle
 
 
 class GraphVisualizer:
     """
     Clase sencilla para visualizar grafos.
 
-    Esta clase se reutilizará en distintos apartados de la wiki.
-    Inicialmente mostraba grafos básicos. Ahora también permite mostrar
-    grafos mixtos con información al pasar el ratón por encima de nodos
-    y aristas, y colecciones de grafos para comparar distintos tipos.
+    Esta clase se reutiliza en distintos apartados de la wiki.
+    Incluye:
+    - visualización simple de grafos,
+    - comparación de varios grafos,
+    - visualización de grafos mixtos con información interactiva,
+    - visualización de estructuras grandes destacando ciclos, caminos,
+      árboles, bosque, conectividad, etc.
     """
 
     def __init__(self, figsize=(8, 5)):
@@ -21,10 +24,6 @@ class GraphVisualizer:
     def _set_centered_limits(self, ax, pos, margin=0.35):
         """
         Centra el grafo dentro de la figura.
-
-        Matplotlib a veces autoescala mal cuando se usan flechas, textos
-        o anotaciones interactivas. Por eso calculamos manualmente los
-        límites del eje a partir de las posiciones de los nodos.
         """
 
         xs = [coord[0] for coord in pos.values()]
@@ -81,9 +80,6 @@ class GraphVisualizer:
     def _draw_manual_edge_labels(self, ax, graph, pos, font_size=8):
         """
         Dibuja las etiquetas de peso manualmente.
-
-        Esto evita que los pesos queden debajo de las aristas y permite
-        desplazar ligeramente el texto respecto al centro de la arista.
         """
 
         edge_labels = nx.get_edge_attributes(graph, "weight")
@@ -126,6 +122,73 @@ class GraphVisualizer:
                     "alpha": 0.95,
                 },
             )
+
+    def _draw_structure_box(
+        self,
+        ax,
+        pos,
+        nodes,
+        label,
+        color="tab:green",
+        pad_x=0.7,
+        pad_y=0.7,
+        linewidth=2.0,
+        linestyle="--",
+    ):
+        """
+        Dibuja una caja resaltando un conjunto de nodos.
+        """
+
+        xs = [pos[node][0] for node in nodes]
+        ys = [pos[node][1] for node in nodes]
+
+        min_x = min(xs) - pad_x
+        max_x = max(xs) + pad_x
+        min_y = min(ys) - pad_y
+        max_y = max(ys) + pad_y
+
+        width = max_x - min_x
+        height = max_y - min_y
+
+        if width < 1.4:
+            extra = (1.4 - width) / 2
+            min_x -= extra
+            width = 1.4
+
+        if height < 1.4:
+            extra = (1.4 - height) / 2
+            min_y -= extra
+            height = 1.4
+
+        rect = Rectangle(
+            (min_x, min_y),
+            width,
+            height,
+            fill=False,
+            edgecolor=color,
+            linewidth=linewidth,
+            linestyle=linestyle,
+            zorder=1,
+        )
+        ax.add_patch(rect)
+
+        ax.text(
+            min_x,
+            max_y + 0.18,
+            label,
+            fontsize=9,
+            fontweight="bold",
+            color=color,
+            ha="left",
+            va="bottom",
+            zorder=35,
+            bbox={
+                "boxstyle": "round,pad=0.2",
+                "fc": "white",
+                "ec": color,
+                "alpha": 0.95,
+            },
+        )
 
     def show_graph(
         self,
@@ -189,9 +252,6 @@ class GraphVisualizer:
     ):
         """
         Muestra varios grafos en una misma ventana.
-
-        Esta función está pensada para comparar visualmente distintos
-        tipos de grafos.
         """
 
         fig, axes = plt.subplots(
@@ -204,10 +264,7 @@ class GraphVisualizer:
 
         axes = axes.flatten()
 
-        # Tamaño reducido para que dentro de cada subplot las aristas se vean.
         node_size = 520
-
-        # Valor pequeño para que las flechas no se queden solo como triángulos.
         directed_shrink = 8
 
         for index, example in enumerate(graph_examples):
@@ -225,7 +282,6 @@ class GraphVisualizer:
             ax.set_title(graph_title, fontsize=11, fontweight="bold")
             ax.axis("off")
 
-            # 1. Dibujar aristas.
             if graph.is_directed():
                 for u, v in graph.edges():
                     x1, y1 = pos[u]
@@ -257,7 +313,6 @@ class GraphVisualizer:
                         zorder=10,
                     )
 
-            # 2. Dibujar nodos.
             node_collection = nx.draw_networkx_nodes(
                 graph,
                 pos,
@@ -266,7 +321,6 @@ class GraphVisualizer:
             )
             node_collection.set_zorder(15)
 
-            # 3. Etiquetas de nodos.
             self._draw_manual_node_labels(
                 ax,
                 graph,
@@ -274,7 +328,6 @@ class GraphVisualizer:
                 font_size=9,
             )
 
-            # 4. Etiquetas de pesos.
             self._draw_manual_edge_labels(
                 ax,
                 graph,
@@ -581,6 +634,172 @@ class GraphVisualizer:
 
         fig.canvas.mpl_connect("motion_notify_event", on_mouse_move)
 
+        plt.tight_layout()
+
+        if save_path is not None:
+            save_path = Path(save_path)
+            save_path.parent.mkdir(parents=True, exist_ok=True)
+            plt.savefig(save_path, dpi=200, bbox_inches="tight")
+            print(f"Imagen guardada en: {save_path}")
+
+        plt.show()
+
+    def show_structures_graph(
+        self,
+        graph,
+        pos,
+        title="Caminos, ciclos, conectividad y árboles",
+        highlighted_path=None,
+        cycle_edges=None,
+        structure_boxes=None,
+        notes=None,
+        save_path=None,
+    ):
+        """
+        Muestra un grafo grande destacando estructuras importantes:
+        - ciclo,
+        - camino,
+        - árboles,
+        - bosque,
+        - componentes no conexas,
+        - vértices aislados.
+
+        Parámetros:
+        - graph: grafo de NetworkX.
+        - pos: posiciones manuales de los nodos.
+        - highlighted_path: lista ordenada de nodos que forman un camino.
+        - cycle_edges: lista de aristas que forman un ciclo a destacar.
+        - structure_boxes: lista de diccionarios, cada uno con:
+            {
+                "nodes": [...],
+                "label": "...",
+                "color": "..."
+            }
+        - notes: lista de textos explicativos para el cuadro resumen.
+        - save_path: ruta opcional para guardar la imagen.
+        """
+
+        cycle_edges = cycle_edges or []
+        structure_boxes = structure_boxes or []
+        notes = notes or []
+
+        fig, ax = plt.subplots(figsize=self.figsize)
+        ax.set_title(title, fontsize=14, fontweight="bold")
+        ax.axis("off")
+
+        # 1. Dibujar primero las cajas de estructuras.
+        for box in structure_boxes:
+            self._draw_structure_box(
+                ax=ax,
+                pos=pos,
+                nodes=box["nodes"],
+                label=box["label"],
+                color=box.get("color", "tab:green"),
+                pad_x=box.get("pad_x", 0.8),
+                pad_y=box.get("pad_y", 0.8),
+            )
+
+        # 2. Dibujar todas las aristas base.
+        for u, v in graph.edges():
+            x1, y1 = pos[u]
+            x2, y2 = pos[v]
+
+            ax.plot(
+                [x1, x2],
+                [y1, y2],
+                linewidth=2.2,
+                color="#555555",
+                zorder=10,
+            )
+
+        # 3. Resaltar las aristas del ciclo.
+        for u, v in cycle_edges:
+            x1, y1 = pos[u]
+            x2, y2 = pos[v]
+
+            ax.plot(
+                [x1, x2],
+                [y1, y2],
+                linewidth=3.6,
+                color="tab:blue",
+                zorder=12,
+            )
+
+        # 4. Resaltar el camino.
+        path_nodes = set()
+        path_edges = []
+
+        if highlighted_path is not None and len(highlighted_path) >= 2:
+            path_nodes = set(highlighted_path)
+            path_edges = list(zip(highlighted_path[:-1], highlighted_path[1:]))
+
+            for u, v in path_edges:
+                x1, y1 = pos[u]
+                x2, y2 = pos[v]
+
+                ax.plot(
+                    [x1, x2],
+                    [y1, y2],
+                    linewidth=4.2,
+                    color="tab:red",
+                    zorder=14,
+                )
+
+        # 5. Dibujar nodos normales.
+        normal_nodes = [node for node in graph.nodes() if node not in path_nodes]
+
+        normal_collection = nx.draw_networkx_nodes(
+            graph,
+            pos,
+            nodelist=normal_nodes,
+            node_size=700,
+            node_color="#4C9ED9",
+            ax=ax,
+        )
+        normal_collection.set_zorder(18)
+
+        # 6. Dibujar nodos del camino.
+        if path_nodes:
+            path_collection = nx.draw_networkx_nodes(
+                graph,
+                pos,
+                nodelist=list(path_nodes),
+                node_size=780,
+                node_color="#FFB347",
+                ax=ax,
+            )
+            path_collection.set_zorder(20)
+
+        # 7. Etiquetas.
+        self._draw_manual_node_labels(
+            ax=ax,
+            graph=graph,
+            pos=pos,
+            font_size=9,
+        )
+
+        # 8. Cuadro resumen.
+        if notes:
+            notes_text = "\n".join(f"• {line}" for line in notes)
+
+            ax.text(
+                0.02,
+                0.02,
+                notes_text,
+                transform=ax.transAxes,
+                ha="left",
+                va="bottom",
+                fontsize=9,
+                zorder=50,
+                bbox={
+                    "boxstyle": "round,pad=0.5",
+                    "fc": "white",
+                    "ec": "black",
+                    "alpha": 0.95,
+                },
+            )
+
+        self._set_centered_limits(ax, pos, margin=0.25)
         plt.tight_layout()
 
         if save_path is not None:
