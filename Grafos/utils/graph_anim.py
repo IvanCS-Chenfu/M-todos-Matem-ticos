@@ -11,9 +11,12 @@ class GraphAnimator:
     """
     Clase reutilizable para crear animaciones de algoritmos sobre grafos.
 
-    En este primer apartado se incorpora una animación específica para BFS.
-    La clase se podrá ampliar más adelante con métodos para DFS, Dijkstra,
-    A*, Prim, Kruskal, etc.
+    Incluye métodos para:
+    - búsqueda en anchura (BFS),
+    - búsqueda en profundidad (DFS).
+
+    Más adelante se podrá ampliar con animaciones para Dijkstra, A*,
+    Prim, Kruskal y otros algoritmos.
     """
 
     def __init__(self, figsize=(15, 9), interval=850):
@@ -38,8 +41,8 @@ class GraphAnimator:
         """
         Devuelve una representación independiente del sentido.
 
-        BFS se ejecuta aquí sobre grafos no dirigidos, por lo que (A, B)
-        y (B, A) deben tratarse como la misma arista.
+        En estos ejemplos BFS y DFS se ejecutan sobre grafos no dirigidos,
+        por lo que (A, B) y (B, A) representan la misma arista.
         """
 
         return frozenset((origen, destino))
@@ -64,7 +67,7 @@ class GraphAnimator:
         """
         Crea una figura con:
         - un área grande para el grafo,
-        - un área inferior para la cola FIFO.
+        - un área inferior para la cola o la pila.
         """
 
         fig = plt.figure(figsize=self.figsize)
@@ -77,7 +80,7 @@ class GraphAnimator:
         )
 
         graph_ax = fig.add_subplot(grid[0])
-        queue_ax = fig.add_subplot(grid[1])
+        structure_ax = fig.add_subplot(grid[1])
 
         fig.suptitle(
             title,
@@ -85,11 +88,18 @@ class GraphAnimator:
             fontweight="bold",
         )
 
-        return fig, graph_ax, queue_ax
+        return fig, graph_ax, structure_ax
+
+    # ------------------------------------------------------------------
+    # Elementos comunes de BFS
+    # ------------------------------------------------------------------
 
     def _dibujar_leyenda(self, ax):
         """
-        Añade una leyenda compacta para interpretar la animación.
+        Añade la leyenda utilizada por la animación BFS.
+
+        Se mantiene este nombre para conservar compatibilidad con el código
+        desarrollado anteriormente.
         """
 
         elementos = [
@@ -246,7 +256,6 @@ class GraphAnimator:
                 va="center",
             )
 
-            # El primer elemento es el siguiente en salir.
             if indice == 0:
                 ax.text(
                     x_actual + ancho_celda / 2,
@@ -307,7 +316,6 @@ class GraphAnimator:
         if active_edge is not None:
             active_edge_normalized = self._normalizar_arista(*active_edge)
 
-        # 1. Todas las aristas base.
         for u, v in graph.edges():
             x1, y1 = pos[u]
             x2, y2 = pos[v]
@@ -335,7 +343,6 @@ class GraphAnimator:
                 zorder=zorder,
             )
 
-        # 2. Clasificación visual de nodos.
         undiscovered_nodes = [
             node
             for node in graph.nodes()
@@ -406,7 +413,6 @@ class GraphAnimator:
             )
             collection.set_zorder(25)
 
-        # 3. Etiquetas de nodos.
         for node, (x, y) in pos.items():
             graph_ax.text(
                 x,
@@ -420,7 +426,6 @@ class GraphAnimator:
                 zorder=35,
             )
 
-        # 4. El nivel aparece solo cuando el nodo ya ha sido descubierto.
         for node, level in levels.items():
             x, y = pos[node]
 
@@ -442,7 +447,6 @@ class GraphAnimator:
                 },
             )
 
-        # 5. Marca del vértice inicial.
         start_x, start_y = pos[start_node]
         graph_ax.text(
             start_x,
@@ -456,7 +460,6 @@ class GraphAnimator:
             zorder=40,
         )
 
-        # 6. Mensaje explicativo de cada paso.
         graph_ax.text(
             0.50,
             0.015,
@@ -519,7 +522,6 @@ class GraphAnimator:
 
         fig, graph_ax, queue_ax = self._preparar_figura(title)
 
-        # Guardar el estado final antes de iniciar la animación.
         if final_image_path is not None:
             self._dibujar_estado_bfs(
                 graph_ax=graph_ax,
@@ -556,6 +558,578 @@ class GraphAnimator:
             self._dibujar_estado_bfs(
                 graph_ax=graph_ax,
                 queue_ax=queue_ax,
+                graph=graph,
+                pos=pos,
+                state=states[frame_index],
+                start_node=start_node,
+            )
+            return []
+
+        self.animation = FuncAnimation(
+            fig,
+            update,
+            frames=len(states),
+            init_func=init,
+            interval=self.interval,
+            repeat=repeat,
+            blit=False,
+        )
+
+        plt.show()
+
+        return self.animation
+
+    # ------------------------------------------------------------------
+    # Elementos específicos de DFS
+    # ------------------------------------------------------------------
+
+    def _dibujar_leyenda_dfs(self, ax):
+        """
+        Añade una leyenda compacta para interpretar DFS.
+        """
+
+        elementos = [
+            Line2D(
+                [0],
+                [0],
+                marker="o",
+                color="none",
+                markerfacecolor="#D9D9D9",
+                markeredgecolor="#666666",
+                markersize=10,
+                label="No descubierto",
+            ),
+            Line2D(
+                [0],
+                [0],
+                marker="o",
+                color="none",
+                markerfacecolor="#F6C85F",
+                markeredgecolor="#8A6D1D",
+                markersize=10,
+                label="Activo / en pila",
+            ),
+            Line2D(
+                [0],
+                [0],
+                marker="o",
+                color="none",
+                markerfacecolor="#E45756",
+                markeredgecolor="#7A1D1D",
+                markersize=10,
+                label="Vértice actual",
+            ),
+            Line2D(
+                [0],
+                [0],
+                marker="o",
+                color="none",
+                markerfacecolor="#4C9ED9",
+                markeredgecolor="#1F4F73",
+                markersize=10,
+                label="Finalizado",
+            ),
+            Line2D(
+                [0],
+                [0],
+                color="#2E8B57",
+                linewidth=3,
+                label="Arista del árbol DFS",
+            ),
+            Line2D(
+                [0],
+                [0],
+                color="#8E5EA2",
+                linewidth=3,
+                label="Arista de ciclo",
+            ),
+        ]
+
+        ax.legend(
+            handles=elementos,
+            loc="upper left",
+            fontsize=8,
+            framealpha=0.96,
+            ncol=2,
+        )
+
+    def _dibujar_pila(self, ax, pila):
+        """
+        Dibuja la pila LIFO de DFS.
+
+        La base aparece a la izquierda y la cima a la derecha.
+        El último elemento es el siguiente que finalizará o retrocederá.
+        """
+
+        ax.clear()
+        ax.axis("off")
+        ax.set_xlim(0, 1)
+        ax.set_ylim(0, 1)
+
+        ax.text(
+            0.02,
+            0.82,
+            "Pila LIFO / camino activo",
+            fontsize=12,
+            fontweight="bold",
+            ha="left",
+            va="center",
+        )
+
+        ax.text(
+            0.02,
+            0.42,
+            "Base",
+            fontsize=9,
+            ha="left",
+            va="center",
+        )
+
+        ax.text(
+            0.98,
+            0.42,
+            "Cima",
+            fontsize=9,
+            ha="right",
+            va="center",
+        )
+
+        if not pila:
+            ax.text(
+                0.50,
+                0.42,
+                "Pila vacía",
+                fontsize=12,
+                fontweight="bold",
+                ha="center",
+                va="center",
+                bbox={
+                    "boxstyle": "round,pad=0.45",
+                    "fc": "white",
+                    "ec": "#777777",
+                    "alpha": 0.98,
+                },
+            )
+            return
+
+        max_celdas = 18
+        pila_visible = list(pila[-max_celdas:])
+
+        inicio_x = 0.11
+        fin_x = 0.89
+        ancho_total = fin_x - inicio_x
+        ancho_celda = min(0.052, ancho_total / max(len(pila_visible), 1))
+        separacion = 0.008
+
+        ancho_ocupado = (
+            len(pila_visible) * ancho_celda
+            + max(0, len(pila_visible) - 1) * separacion
+        )
+
+        x_actual = 0.50 - ancho_ocupado / 2
+
+        for indice, nodo in enumerate(pila_visible):
+            es_cima = indice == len(pila_visible) - 1
+
+            rectangulo = Rectangle(
+                (x_actual, 0.22),
+                ancho_celda,
+                0.40,
+                facecolor="#E45756" if es_cima else "#F6C85F",
+                edgecolor="#7A1D1D" if es_cima else "#8A6D1D",
+                linewidth=1.8,
+            )
+            ax.add_patch(rectangulo)
+
+            ax.text(
+                x_actual + ancho_celda / 2,
+                0.42,
+                str(nodo),
+                fontsize=9,
+                fontweight="bold",
+                ha="center",
+                va="center",
+            )
+
+            if es_cima:
+                ax.text(
+                    x_actual + ancho_celda / 2,
+                    0.12,
+                    "actual",
+                    fontsize=7,
+                    ha="center",
+                    va="top",
+                )
+
+            x_actual += ancho_celda + separacion
+
+        if len(pila) > max_celdas:
+            ax.text(
+                0.08,
+                0.42,
+                f"+{len(pila) - max_celdas}",
+                fontsize=9,
+                fontweight="bold",
+                ha="right",
+                va="center",
+            )
+
+    def _dibujar_estado_dfs(
+        self,
+        graph_ax,
+        stack_ax,
+        graph,
+        pos,
+        state,
+        start_node,
+    ):
+        """
+        Dibuja un estado completo de DFS.
+
+        Sobre cada nodo descubierto aparece:
+
+            profundidad · descubrimiento/finalización
+
+        Ejemplo:
+
+            p3 · 7/12
+
+        Si el nodo todavía no ha finalizado, el segundo tiempo aparece
+        como un guion.
+        """
+
+        graph_ax.clear()
+        graph_ax.axis("off")
+
+        limites = self._calcular_limites(
+            pos,
+            margin_x=1.3,
+            margin_y=1.15,
+        )
+
+        graph_ax.set_xlim(limites[0], limites[1])
+        graph_ax.set_ylim(limites[2], limites[3])
+        graph_ax.set_aspect("equal", adjustable="box")
+
+        current = state.get("current")
+        discovered = set(state.get("discovered", set()))
+        finished = set(state.get("finished", set()))
+        stack = list(state.get("stack", []))
+        depths = dict(state.get("depths", {}))
+        discovery_times = dict(state.get("discovery_times", {}))
+        finish_times = dict(state.get("finish_times", {}))
+
+        tree_edges = {
+            self._normalizar_arista(u, v)
+            for u, v in state.get("tree_edges", [])
+        }
+
+        cycle_edges = {
+            self._normalizar_arista(u, v)
+            for u, v in state.get("cycle_edges", [])
+        }
+
+        active_edge = state.get("active_edge")
+        active_edge_normalized = None
+
+        if active_edge is not None:
+            active_edge_normalized = self._normalizar_arista(*active_edge)
+
+        edge_kind = state.get("edge_kind")
+
+        # 1. Aristas.
+        for u, v in graph.edges():
+            x1, y1 = pos[u]
+            x2, y2 = pos[v]
+
+            edge_key = self._normalizar_arista(u, v)
+
+            if edge_key == active_edge_normalized:
+                if edge_kind == "backtrack":
+                    color = "#F28E2B"
+                elif edge_kind == "cycle":
+                    color = "#8E5EA2"
+                else:
+                    color = "#E45756"
+
+                linewidth = 4.2
+                zorder = 18
+
+            elif edge_key in tree_edges:
+                color = "#2E8B57"
+                linewidth = 3.0
+                zorder = 15
+
+            elif edge_key in cycle_edges:
+                color = "#8E5EA2"
+                linewidth = 2.8
+                zorder = 14
+
+            else:
+                color = "#B8B8B8"
+                linewidth = 1.7
+                zorder = 10
+
+            graph_ax.plot(
+                [x1, x2],
+                [y1, y2],
+                color=color,
+                linewidth=linewidth,
+                zorder=zorder,
+            )
+
+        # 2. Estados de los nodos.
+        undiscovered_nodes = [
+            node
+            for node in graph.nodes()
+            if node not in discovered
+        ]
+
+        active_nodes = [
+            node
+            for node in stack
+            if node != current
+        ]
+
+        finished_nodes = [
+            node
+            for node in finished
+            if node != current
+        ]
+
+        if undiscovered_nodes:
+            collection = nx.draw_networkx_nodes(
+                graph,
+                pos,
+                nodelist=undiscovered_nodes,
+                node_size=720,
+                node_color="#D9D9D9",
+                edgecolors="#666666",
+                linewidths=1.3,
+                ax=graph_ax,
+            )
+            collection.set_zorder(20)
+
+        if active_nodes:
+            collection = nx.draw_networkx_nodes(
+                graph,
+                pos,
+                nodelist=active_nodes,
+                node_size=780,
+                node_color="#F6C85F",
+                edgecolors="#8A6D1D",
+                linewidths=1.6,
+                ax=graph_ax,
+            )
+            collection.set_zorder(22)
+
+        if finished_nodes:
+            collection = nx.draw_networkx_nodes(
+                graph,
+                pos,
+                nodelist=finished_nodes,
+                node_size=760,
+                node_color="#4C9ED9",
+                edgecolors="#1F4F73",
+                linewidths=1.5,
+                ax=graph_ax,
+            )
+            collection.set_zorder(22)
+
+        if current is not None:
+            current_color = (
+                "#4C9ED9"
+                if current in finished and current not in stack
+                else "#E45756"
+            )
+
+            current_edge_color = (
+                "#1F4F73"
+                if current in finished and current not in stack
+                else "#7A1D1D"
+            )
+
+            collection = nx.draw_networkx_nodes(
+                graph,
+                pos,
+                nodelist=[current],
+                node_size=920,
+                node_color=current_color,
+                edgecolors=current_edge_color,
+                linewidths=2.4,
+                ax=graph_ax,
+            )
+            collection.set_zorder(25)
+
+        # 3. Etiquetas de los nodos.
+        for node, (x, y) in pos.items():
+            graph_ax.text(
+                x,
+                y,
+                str(node),
+                fontsize=10,
+                fontweight="bold",
+                ha="center",
+                va="center",
+                color="black",
+                zorder=35,
+            )
+
+        # 4. Profundidad y tiempos DFS.
+        for node in discovered:
+            x, y = pos[node]
+
+            profundidad = depths.get(node, "-")
+            descubrimiento = discovery_times.get(node, "-")
+            finalizacion = finish_times.get(node, "-")
+
+            graph_ax.text(
+                x,
+                y + 0.36,
+                f"p{profundidad} · {descubrimiento}/{finalizacion}",
+                fontsize=7.5,
+                fontweight="bold",
+                ha="center",
+                va="bottom",
+                color="#222222",
+                zorder=40,
+                bbox={
+                    "boxstyle": "round,pad=0.20",
+                    "fc": "white",
+                    "ec": "#555555",
+                    "alpha": 0.97,
+                },
+            )
+
+        # 5. Vértice inicial.
+        start_x, start_y = pos[start_node]
+        graph_ax.text(
+            start_x,
+            start_y - 0.43,
+            "inicio",
+            fontsize=8,
+            fontweight="bold",
+            ha="center",
+            va="top",
+            color="#7A1D1D",
+            zorder=40,
+        )
+
+        # 6. Explicación del paso.
+        graph_ax.text(
+            0.50,
+            0.015,
+            state.get("message", ""),
+            transform=graph_ax.transAxes,
+            fontsize=10,
+            ha="center",
+            va="bottom",
+            bbox={
+                "boxstyle": "round,pad=0.40",
+                "fc": "white",
+                "ec": "#777777",
+                "alpha": 0.96,
+            },
+            zorder=50,
+        )
+
+        graph_ax.text(
+            0.99,
+            0.985,
+            (
+                f"Descubiertos: {len(discovered)} de {graph.number_of_nodes()}  |  "
+                f"Finalizados: {len(finished)}"
+            ),
+            transform=graph_ax.transAxes,
+            fontsize=9,
+            ha="right",
+            va="top",
+            bbox={
+                "boxstyle": "round,pad=0.30",
+                "fc": "white",
+                "ec": "#999999",
+                "alpha": 0.96,
+            },
+            zorder=50,
+        )
+
+        graph_ax.text(
+            0.99,
+            0.925,
+            "Etiqueta: profundidad · descubrimiento/finalización",
+            transform=graph_ax.transAxes,
+            fontsize=8,
+            ha="right",
+            va="top",
+            color="#444444",
+            zorder=50,
+        )
+
+        self._dibujar_leyenda_dfs(graph_ax)
+        self._dibujar_pila(stack_ax, stack)
+
+    def animate_dfs(
+        self,
+        graph,
+        pos,
+        states,
+        start_node,
+        title="Búsqueda en profundidad (DFS)",
+        final_image_path=None,
+        repeat=False,
+    ):
+        """
+        Anima DFS a partir de una secuencia de estados ya calculada.
+
+        También guarda una imagen del estado final, en el que:
+        - la pila está vacía,
+        - todos los vértices alcanzables están finalizados,
+        - aparecen profundidad y tiempos de descubrimiento/finalización,
+        - se ve el árbol DFS,
+        - se distinguen las aristas que cierran ciclos.
+        """
+
+        if not states:
+            raise ValueError("La lista de estados de DFS no puede estar vacía.")
+
+        fig, graph_ax, stack_ax = self._preparar_figura(title)
+
+        if final_image_path is not None:
+            self._dibujar_estado_dfs(
+                graph_ax=graph_ax,
+                stack_ax=stack_ax,
+                graph=graph,
+                pos=pos,
+                state=states[-1],
+                start_node=start_node,
+            )
+
+            final_image_path = Path(final_image_path)
+            final_image_path.parent.mkdir(parents=True, exist_ok=True)
+
+            fig.savefig(
+                final_image_path,
+                dpi=200,
+                bbox_inches="tight",
+            )
+
+            print(f"Imagen final guardada en: {final_image_path}")
+
+        def init():
+            self._dibujar_estado_dfs(
+                graph_ax=graph_ax,
+                stack_ax=stack_ax,
+                graph=graph,
+                pos=pos,
+                state=states[0],
+                start_node=start_node,
+            )
+            return []
+
+        def update(frame_index):
+            self._dibujar_estado_dfs(
+                graph_ax=graph_ax,
+                stack_ax=stack_ax,
                 graph=graph,
                 pos=pos,
                 state=states[frame_index],
