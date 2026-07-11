@@ -15,7 +15,9 @@ class GraphVisualizer:
     - comparación de varios grafos,
     - visualización de grafos mixtos con información interactiva,
     - visualización de estructuras grandes destacando ciclos, caminos,
-      árboles, bosque, conectividad, etc.
+      árboles, bosque, conectividad, etc.,
+    - visualización de distintas representaciones computacionales
+      de un mismo grafo.
     """
 
     def __init__(self, figsize=(8, 5)):
@@ -190,6 +192,60 @@ class GraphVisualizer:
             },
         )
 
+    def _draw_weighted_graph_on_axis(
+        self,
+        ax,
+        graph,
+        pos,
+        title,
+        node_size=650,
+        font_size=9,
+    ):
+        """
+        Dibuja un grafo ponderado dentro de un eje concreto.
+
+        Se usa para representar el mismo grafo en varios paneles.
+        """
+
+        ax.set_title(title, fontsize=11, fontweight="bold")
+        ax.axis("off")
+
+        for u, v in graph.edges():
+            x1, y1 = pos[u]
+            x2, y2 = pos[v]
+
+            ax.plot(
+                [x1, x2],
+                [y1, y2],
+                linewidth=2.2,
+                color="black",
+                zorder=10,
+            )
+
+        node_collection = nx.draw_networkx_nodes(
+            graph,
+            pos,
+            node_size=node_size,
+            ax=ax,
+        )
+        node_collection.set_zorder(15)
+
+        self._draw_manual_node_labels(
+            ax=ax,
+            graph=graph,
+            pos=pos,
+            font_size=font_size,
+        )
+
+        self._draw_manual_edge_labels(
+            ax=ax,
+            graph=graph,
+            pos=pos,
+            font_size=8,
+        )
+
+        self._set_centered_limits(ax, pos, margin=0.45)
+
     def show_graph(
         self,
         graph,
@@ -350,6 +406,87 @@ class GraphVisualizer:
 
         for empty_index in range(len(graph_examples), len(axes)):
             axes[empty_index].axis("off")
+
+        plt.tight_layout()
+
+        if save_path is not None:
+            save_path = Path(save_path)
+            save_path.parent.mkdir(parents=True, exist_ok=True)
+            plt.savefig(save_path, dpi=200, bbox_inches="tight")
+            print(f"Imagen guardada en: {save_path}")
+
+        plt.show()
+
+    def show_graph_representations(
+        self,
+        representation_examples,
+        pos,
+        title="Representaciones computacionales de un mismo grafo",
+        save_path=None,
+    ):
+        """
+        Muestra el mismo grafo creado desde distintas representaciones.
+
+        Cada elemento de representation_examples debe tener:
+
+        {
+            "title": "Lista de aristas",
+            "graph": grafo_networkx,
+            "text": "Representación textual"
+        }
+
+        La figura final tiene dos filas:
+        - arriba: el grafo dibujado,
+        - abajo: la representación computacional usada para crearlo.
+        """
+
+        num_examples = len(representation_examples)
+
+        fig = plt.figure(figsize=self.figsize)
+        fig.suptitle(title, fontsize=14, fontweight="bold")
+
+        grid = fig.add_gridspec(
+            2,
+            num_examples,
+            height_ratios=[2.0, 1.4],
+            hspace=0.25,
+            wspace=0.18,
+        )
+
+        for index, example in enumerate(representation_examples):
+            graph_ax = fig.add_subplot(grid[0, index])
+            text_ax = fig.add_subplot(grid[1, index])
+
+            graph = example["graph"]
+            example_title = example["title"]
+            representation_text = example["text"]
+
+            self._draw_weighted_graph_on_axis(
+                ax=graph_ax,
+                graph=graph,
+                pos=pos,
+                title=example_title,
+                node_size=620,
+                font_size=9,
+            )
+
+            text_ax.axis("off")
+            text_ax.text(
+                0.0,
+                1.0,
+                representation_text,
+                transform=text_ax.transAxes,
+                ha="left",
+                va="top",
+                fontsize=7,
+                family="monospace",
+                bbox={
+                    "boxstyle": "round,pad=0.45",
+                    "fc": "white",
+                    "ec": "#999999",
+                    "alpha": 0.98,
+                },
+            )
 
         plt.tight_layout()
 
@@ -663,20 +800,6 @@ class GraphVisualizer:
         - bosque,
         - componentes no conexas,
         - vértices aislados.
-
-        Parámetros:
-        - graph: grafo de NetworkX.
-        - pos: posiciones manuales de los nodos.
-        - highlighted_path: lista ordenada de nodos que forman un camino.
-        - cycle_edges: lista de aristas que forman un ciclo a destacar.
-        - structure_boxes: lista de diccionarios, cada uno con:
-            {
-                "nodes": [...],
-                "label": "...",
-                "color": "..."
-            }
-        - notes: lista de textos explicativos para el cuadro resumen.
-        - save_path: ruta opcional para guardar la imagen.
         """
 
         cycle_edges = cycle_edges or []
@@ -687,7 +810,6 @@ class GraphVisualizer:
         ax.set_title(title, fontsize=14, fontweight="bold")
         ax.axis("off")
 
-        # 1. Dibujar primero las cajas de estructuras.
         for box in structure_boxes:
             self._draw_structure_box(
                 ax=ax,
@@ -699,7 +821,6 @@ class GraphVisualizer:
                 pad_y=box.get("pad_y", 0.8),
             )
 
-        # 2. Dibujar todas las aristas base.
         for u, v in graph.edges():
             x1, y1 = pos[u]
             x2, y2 = pos[v]
@@ -712,7 +833,6 @@ class GraphVisualizer:
                 zorder=10,
             )
 
-        # 3. Resaltar las aristas del ciclo.
         for u, v in cycle_edges:
             x1, y1 = pos[u]
             x2, y2 = pos[v]
@@ -725,9 +845,7 @@ class GraphVisualizer:
                 zorder=12,
             )
 
-        # 4. Resaltar el camino.
         path_nodes = set()
-        path_edges = []
 
         if highlighted_path is not None and len(highlighted_path) >= 2:
             path_nodes = set(highlighted_path)
@@ -745,7 +863,6 @@ class GraphVisualizer:
                     zorder=14,
                 )
 
-        # 5. Dibujar nodos normales.
         normal_nodes = [node for node in graph.nodes() if node not in path_nodes]
 
         normal_collection = nx.draw_networkx_nodes(
@@ -758,7 +875,6 @@ class GraphVisualizer:
         )
         normal_collection.set_zorder(18)
 
-        # 6. Dibujar nodos del camino.
         if path_nodes:
             path_collection = nx.draw_networkx_nodes(
                 graph,
@@ -770,7 +886,6 @@ class GraphVisualizer:
             )
             path_collection.set_zorder(20)
 
-        # 7. Etiquetas.
         self._draw_manual_node_labels(
             ax=ax,
             graph=graph,
@@ -778,7 +893,6 @@ class GraphVisualizer:
             font_size=9,
         )
 
-        # 8. Cuadro resumen.
         if notes:
             notes_text = "\n".join(f"• {line}" for line in notes)
 
