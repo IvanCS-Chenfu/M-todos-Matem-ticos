@@ -21,7 +21,8 @@ class GraphAnimator:
     - árboles de expansión mínima con Prim y Kruskal,
     - Union-Find y componentes conectadas,
     - grafos dirigidos acíclicos y ordenamiento topológico,
-    - flujo máximo y cortes mínimos con Edmonds-Karp.
+    - flujo máximo y cortes mínimos con Edmonds-Karp,
+    - centralidad, PageRank y detección de comunidades.
 
     Más adelante se podrá ampliar con otros algoritmos.
     """
@@ -9038,4 +9039,972 @@ class GraphAnimator:
 
         plt.show()
 
+        return self.animation
+
+    # ------------------------------------------------------------------
+    # Elementos específicos de centralidad, PageRank y comunidades
+    # ------------------------------------------------------------------
+
+    def _preparar_figura_centralidad(self, title):
+        """
+        Mantiene una distribución comparable con los algoritmos anteriores.
+
+        Distribución:
+        - izquierda: puntuaciones y ranking del estado actual;
+        - derecha superior: grafo con tamaños y colores significativos;
+        - derecha inferior: ranking, convergencia o comunidades.
+        """
+
+        fig = plt.figure(figsize=self.figsize)
+
+        grid = fig.add_gridspec(
+            2,
+            2,
+            width_ratios=[2.05, 3.95],
+            height_ratios=[4.65, 1.75],
+            wspace=0.08,
+            hspace=0.09,
+        )
+
+        info_ax = fig.add_subplot(grid[:, 0])
+        graph_ax = fig.add_subplot(grid[0, 1])
+        structure_ax = fig.add_subplot(grid[1, 1])
+
+        fig.suptitle(
+            title,
+            fontsize=15,
+            fontweight="bold",
+        )
+
+        fig.subplots_adjust(
+            left=0.025,
+            right=0.985,
+            top=0.93,
+            bottom=0.045,
+        )
+
+        return fig, graph_ax, info_ax, structure_ax
+
+    @staticmethod
+    def _paleta_comunidades_analisis():
+        """Devuelve una paleta estable para las comunidades."""
+
+        return [
+            "#B7D7F0",
+            "#FBE5A6",
+            "#D8C4E8",
+            "#B7E4C7",
+            "#F7C6C7",
+            "#CDE7E8",
+            "#E7D6B8",
+            "#D6E4B7",
+            "#D8D8F0",
+            "#F4D2A7",
+            "#C8D6E5",
+            "#D5E8D4",
+            "#FFE0B2",
+            "#E1BEE7",
+            "#F8BBD0",
+        ]
+
+    @staticmethod
+    def _normalizar_valores_analisis(scores):
+        """Normaliza puntuaciones al intervalo [0, 1]."""
+
+        if not scores:
+            return {}
+
+        values = list(scores.values())
+        minimum = min(values)
+        maximum = max(values)
+
+        if abs(maximum - minimum) < 1e-15:
+            return {node: 0.5 for node in scores}
+
+        return {
+            node: (value - minimum) / (maximum - minimum)
+            for node, value in scores.items()
+        }
+
+    @staticmethod
+    def _color_por_puntuacion_analisis(value):
+        """Interpola entre gris claro y azul según una puntuación normalizada."""
+
+        value = max(0.0, min(1.0, float(value)))
+        start = (224, 224, 224)
+        end = (76, 158, 217)
+        rgb = tuple(
+            round(start[index] + value * (end[index] - start[index]))
+            for index in range(3)
+        )
+        return "#{:02X}{:02X}{:02X}".format(*rgb)
+
+    def _dibujar_leyenda_centralidad(self, ax, phase):
+        """Dibuja una leyenda adaptada a la fase activa."""
+
+        if phase in {"communities", "final"}:
+            elements = [
+                Line2D(
+                    [0],
+                    [0],
+                    marker="o",
+                    color="none",
+                    markerfacecolor="#B7D7F0",
+                    markeredgecolor="#666666",
+                    markersize=8,
+                    label="Comunidad",
+                ),
+                Line2D(
+                    [0],
+                    [0],
+                    color="#C62828",
+                    linewidth=3,
+                    label="Enlace entre comunidades",
+                ),
+                Line2D(
+                    [0],
+                    [0],
+                    color="#2E8B57",
+                    linewidth=4,
+                    label="Fusión examinada",
+                ),
+            ]
+        elif phase == "pagerank":
+            elements = [
+                Line2D(
+                    [0],
+                    [0],
+                    marker="o",
+                    color="none",
+                    markerfacecolor="#4C9ED9",
+                    markeredgecolor="#1F4F73",
+                    markersize=8,
+                    label="PageRank alto",
+                ),
+                Line2D(
+                    [0],
+                    [0],
+                    marker="o",
+                    color="none",
+                    markerfacecolor="#D9D9D9",
+                    markeredgecolor="#666666",
+                    markersize=8,
+                    label="PageRank bajo",
+                ),
+                Line2D(
+                    [0],
+                    [0],
+                    color="#777777",
+                    linewidth=2,
+                    label="Enlace dirigido",
+                ),
+            ]
+        else:
+            elements = [
+                Line2D(
+                    [0],
+                    [0],
+                    marker="o",
+                    color="none",
+                    markerfacecolor="#4C9ED9",
+                    markeredgecolor="#1F4F73",
+                    markersize=8,
+                    label="Puntuación alta",
+                ),
+                Line2D(
+                    [0],
+                    [0],
+                    marker="o",
+                    color="none",
+                    markerfacecolor="#D9D9D9",
+                    markeredgecolor="#666666",
+                    markersize=8,
+                    label="Puntuación baja",
+                ),
+                Line2D(
+                    [0],
+                    [0],
+                    marker="o",
+                    color="none",
+                    markerfacecolor="#E45756",
+                    markeredgecolor="#7A1D1D",
+                    markersize=8,
+                    label="Vértice destacado",
+                ),
+            ]
+
+        ax.legend(
+            handles=elements,
+            loc="upper center",
+            bbox_to_anchor=(0.5, 0.925),
+            fontsize=6.7,
+            framealpha=0.97,
+            ncol=1 if len(elements) <= 3 else 2,
+            columnspacing=0.65,
+            handlelength=2.0,
+            borderpad=0.50,
+        )
+
+    def _dibujar_tabla_centralidad(self, ax, graph, state):
+        """Dibuja puntuaciones, posiciones y comunidades."""
+
+        ax.clear()
+        ax.axis("off")
+        ax.set_xlim(0, 1)
+        ax.set_ylim(0, 1)
+
+        phase = state.get("phase", "degree")
+        metric_label = state.get("metric_label", "Análisis estructural")
+        scores = dict(state.get("scores", {}))
+        ranking = list(state.get("ranking", []))
+        current_node = state.get("current_node")
+        communities = list(state.get("communities", []))
+
+        ax.text(
+            0.50,
+            0.985,
+            metric_label,
+            fontsize=11.0,
+            fontweight="bold",
+            ha="center",
+            va="top",
+        )
+
+        if phase == "final":
+            all_metrics = dict(state.get("all_metrics", {}))
+            community_map = dict(state.get("community_map", {}))
+
+            headers = ["v", "grado", "cerc.", "inter.", "autov.", "PR", "com."]
+            x_positions = [0.055, 0.18, 0.33, 0.48, 0.63, 0.78, 0.925]
+
+            for x, header in zip(x_positions, headers):
+                ax.text(
+                    x,
+                    0.925,
+                    header,
+                    fontsize=6.6,
+                    fontweight="bold",
+                    ha="center",
+                    va="center",
+                )
+
+            nodes = sorted(graph.nodes())
+            top_y = 0.875
+            row_height = 0.049
+
+            for index, node in enumerate(nodes):
+                y = top_y - index * row_height
+                background = "#F7F7F7" if index % 2 == 0 else "white"
+                rectangle = Rectangle(
+                    (0.025, y - 0.020),
+                    0.95,
+                    0.041,
+                    facecolor=background,
+                    edgecolor="#DDDDDD",
+                    linewidth=0.5,
+                )
+                ax.add_patch(rectangle)
+
+                values = [
+                    node,
+                    f"{all_metrics['degree'][node]:.3f}",
+                    f"{all_metrics['closeness'][node]:.3f}",
+                    f"{all_metrics['betweenness'][node]:.3f}",
+                    f"{all_metrics['eigenvector'][node]:.3f}",
+                    f"{all_metrics['pagerank'][node]:.3f}",
+                    str(community_map.get(node, "—")),
+                ]
+
+                for x, value in zip(x_positions, values):
+                    ax.text(
+                        x,
+                        y,
+                        str(value),
+                        fontsize=5.9,
+                        fontweight="bold" if x == x_positions[0] else "normal",
+                        ha="center",
+                        va="center",
+                    )
+        else:
+            rank_position = {
+                node: index + 1
+                for index, (node, _) in enumerate(ranking)
+            }
+
+            nodes = sorted(graph.nodes())
+            number_of_columns = 3
+            card_width = 0.275
+            card_height = 0.098
+            horizontal_gap = 0.035
+            vertical_gap = 0.018
+            total_width = (
+                number_of_columns * card_width
+                + (number_of_columns - 1) * horizontal_gap
+            )
+            initial_x = (1 - total_width) / 2
+            top_y = 0.675
+
+            community_map = {}
+            for community_index, community in enumerate(communities, start=1):
+                for node in community:
+                    community_map[node] = community_index
+
+            normalized = self._normalizar_valores_analisis(scores)
+
+            for index, node in enumerate(nodes):
+                row = index // number_of_columns
+                column = index % number_of_columns
+                x = initial_x + column * (card_width + horizontal_gap)
+                y = top_y - row * (card_height + vertical_gap)
+
+                face_color = self._color_por_puntuacion_analisis(
+                    normalized.get(node, 0.0)
+                )
+                edge_color = "#666666"
+                line_width = 1.3
+
+                if phase == "communities":
+                    palette = self._paleta_comunidades_analisis()
+                    community_number = community_map.get(node, 1)
+                    face_color = palette[(community_number - 1) % len(palette)]
+
+                if node == current_node:
+                    edge_color = "#C62828"
+                    line_width = 3.0
+
+                rectangle = Rectangle(
+                    (x, y),
+                    card_width,
+                    card_height,
+                    facecolor=face_color,
+                    edgecolor=edge_color,
+                    linewidth=line_width,
+                )
+                ax.add_patch(rectangle)
+
+                score_text = (
+                    "—"
+                    if node not in scores
+                    else f"{scores[node]:.5f}"
+                )
+                rank_text = rank_position.get(node, "—")
+
+                ax.text(
+                    x + card_width * 0.14,
+                    y + card_height * 0.65,
+                    str(node),
+                    fontsize=8.5,
+                    fontweight="bold",
+                    ha="center",
+                    va="center",
+                )
+                ax.text(
+                    x + card_width * 0.34,
+                    y + card_height * 0.65,
+                    score_text,
+                    fontsize=6.5,
+                    ha="left",
+                    va="center",
+                )
+                ax.text(
+                    x + card_width * 0.14,
+                    y + card_height * 0.27,
+                    f"rango {rank_text}",
+                    fontsize=6.2,
+                    ha="left",
+                    va="center",
+                )
+
+                if phase == "communities":
+                    ax.text(
+                        x + card_width * 0.62,
+                        y + card_height * 0.27,
+                        f"C{community_map.get(node, '—')}",
+                        fontsize=6.4,
+                        ha="left",
+                        va="center",
+                    )
+
+        footer = state.get("table_footer", "")
+        ax.text(
+            0.50,
+            0.047,
+            footer,
+            fontsize=6.2,
+            ha="center",
+            va="center",
+            color="#444444",
+        )
+
+        if phase != "final":
+            self._dibujar_leyenda_centralidad(ax, phase)
+
+    def _dibujar_panel_inferior_centralidad(self, ax, state):
+        """Dibuja ranking, convergencia, fusiones o resumen final."""
+
+        ax.clear()
+        ax.axis("off")
+        ax.set_xlim(0, 1)
+        ax.set_ylim(0, 1)
+
+        phase = state.get("phase", "degree")
+        ranking = list(state.get("ranking", []))
+        communities = list(state.get("communities", []))
+
+        if phase == "final":
+            winners = list(state.get("winners", []))
+            ax.text(
+                0.02,
+                0.88,
+                "Comparación final de métricas",
+                fontsize=11.6,
+                fontweight="bold",
+                ha="left",
+                va="center",
+            )
+
+            if winners:
+                cell_width = 0.14
+                gap = 0.012
+                total = len(winners) * cell_width + (len(winners) - 1) * gap
+                x = 0.50 - total / 2
+
+                for label, node, value in winners:
+                    rectangle = Rectangle(
+                        (x, 0.23),
+                        cell_width,
+                        0.43,
+                        facecolor="#EEF4FA",
+                        edgecolor="#577590",
+                        linewidth=1.4,
+                    )
+                    ax.add_patch(rectangle)
+                    ax.text(
+                        x + cell_width / 2,
+                        0.54,
+                        label,
+                        fontsize=6.7,
+                        fontweight="bold",
+                        ha="center",
+                        va="center",
+                    )
+                    ax.text(
+                        x + cell_width / 2,
+                        0.40,
+                        str(node),
+                        fontsize=10,
+                        fontweight="bold",
+                        ha="center",
+                        va="center",
+                    )
+                    ax.text(
+                        x + cell_width / 2,
+                        0.28,
+                        f"{value:.4f}",
+                        fontsize=6.6,
+                        ha="center",
+                        va="center",
+                    )
+                    x += cell_width + gap
+
+            ax.text(
+                0.98,
+                0.88,
+                (
+                    f"Comunidades: {len(communities)} · "
+                    f"modularidad: {state.get('modularity', 0):.4f}"
+                ),
+                fontsize=8.3,
+                ha="right",
+                va="center",
+                color="#444444",
+            )
+            return
+
+        if phase == "communities":
+            ax.text(
+                0.02,
+                0.88,
+                "Optimización voraz de modularidad",
+                fontsize=11.6,
+                fontweight="bold",
+                ha="left",
+                va="center",
+            )
+            ax.text(
+                0.98,
+                0.88,
+                (
+                    f"comunidades: {len(communities)} · "
+                    f"Q={state.get('modularity', 0):.5f}"
+                ),
+                fontsize=8.3,
+                ha="right",
+                va="center",
+                color="#444444",
+            )
+
+            visible = communities[:8]
+            cell_width = min(0.105, 0.80 / max(len(visible), 1))
+            gap = 0.010
+            occupied = len(visible) * cell_width + max(0, len(visible) - 1) * gap
+            x = 0.50 - occupied / 2
+            palette = self._paleta_comunidades_analisis()
+            active_merge = state.get("active_merge")
+            active_sets = [set(group) for group in active_merge] if active_merge else []
+
+            for index, community in enumerate(visible):
+                is_active = any(set(community) == group for group in active_sets)
+                rectangle = Rectangle(
+                    (x, 0.21),
+                    cell_width,
+                    0.43,
+                    facecolor=palette[index % len(palette)],
+                    edgecolor="#2E8B57" if is_active else "#666666",
+                    linewidth=2.6 if is_active else 1.3,
+                )
+                ax.add_patch(rectangle)
+                ax.text(
+                    x + cell_width / 2,
+                    0.50,
+                    f"C{index + 1}",
+                    fontsize=7.2,
+                    fontweight="bold",
+                    ha="center",
+                    va="center",
+                )
+                ax.text(
+                    x + cell_width / 2,
+                    0.34,
+                    "".join(map(str, sorted(community))),
+                    fontsize=6.2,
+                    ha="center",
+                    va="center",
+                )
+                x += cell_width + gap
+            return
+
+        metric_label = state.get("metric_label", "Ranking")
+        ax.text(
+            0.02,
+            0.88,
+            f"Ranking · {metric_label}",
+            fontsize=11.6,
+            fontweight="bold",
+            ha="left",
+            va="center",
+        )
+
+        iteration = state.get("iteration")
+        delta = state.get("delta")
+        if iteration is not None:
+            iteration_text = (
+                f"iteración: {iteration} · distribución inicial"
+                if delta == float("inf")
+                else f"iteración: {iteration} · cambio: {delta:.3e}"
+            )
+            ax.text(
+                0.98,
+                0.88,
+                iteration_text,
+                fontsize=8.2,
+                ha="right",
+                va="center",
+                color="#444444",
+            )
+
+        visible = ranking[:7]
+        if not visible:
+            return
+
+        cell_width = 0.105
+        gap = 0.012
+        occupied = len(visible) * cell_width + (len(visible) - 1) * gap
+        x = 0.50 - occupied / 2
+
+        for index, (node, value) in enumerate(visible, start=1):
+            rectangle = Rectangle(
+                (x, 0.21),
+                cell_width,
+                0.43,
+                facecolor="#B7D7F0" if index == 1 else "#EEF4FA",
+                edgecolor="#1F4F73",
+                linewidth=2.0 if index == 1 else 1.2,
+            )
+            ax.add_patch(rectangle)
+            ax.text(
+                x + cell_width / 2,
+                0.53,
+                f"#{index}",
+                fontsize=6.5,
+                ha="center",
+                va="center",
+            )
+            ax.text(
+                x + cell_width / 2,
+                0.41,
+                str(node),
+                fontsize=9.5,
+                fontweight="bold",
+                ha="center",
+                va="center",
+            )
+            ax.text(
+                x + cell_width / 2,
+                0.28,
+                f"{value:.5f}",
+                fontsize=6.2,
+                ha="center",
+                va="center",
+            )
+            x += cell_width + gap
+
+    def _dibujar_grafo_centralidad(
+        self,
+        graph_ax,
+        graph,
+        pagerank_graph,
+        pos,
+        state,
+    ):
+        """Dibuja el grafo del estado actual."""
+
+        graph_ax.clear()
+        graph_ax.axis("off")
+
+        limits = self._calcular_limites(
+            pos,
+            margin_x=1.15,
+            margin_y=1.10,
+        )
+        graph_ax.set_xlim(limits[0], limits[1])
+        graph_ax.set_ylim(limits[2], limits[3])
+        graph_ax.set_aspect("equal", adjustable="box")
+
+        phase = state.get("phase", "degree")
+        scores = dict(state.get("scores", {}))
+        current_node = state.get("current_node")
+        communities = list(state.get("communities", []))
+        active_merge = state.get("active_merge")
+        bridge_edges = {
+            self._normalizar_arista(*edge)
+            for edge in state.get("bridge_edges", [])
+        }
+
+        community_map = {}
+        for community_index, community in enumerate(communities):
+            for node in community:
+                community_map[node] = community_index
+
+        active_nodes = set()
+        if active_merge:
+            for group in active_merge:
+                active_nodes.update(group)
+
+        use_directed = phase == "pagerank"
+        drawing_graph = pagerank_graph if use_directed else graph
+
+        if use_directed:
+            for origin, destination, data in drawing_graph.edges(data=True):
+                reverse_exists = drawing_graph.has_edge(destination, origin)
+                if reverse_exists:
+                    curvature = 0.10 if str(origin) < str(destination) else -0.10
+                else:
+                    curvature = 0.0
+
+                weight = float(data.get("weight", 1.0))
+                line_width = 0.8 + min(weight, 3.0) * 0.45
+                self._dibujar_flecha_flujo(
+                    ax=graph_ax,
+                    pos=pos,
+                    origin=origin,
+                    destination=destination,
+                    color="#9A9A9A",
+                    line_width=line_width,
+                    zorder=9,
+                    line_style="solid",
+                    curvature=curvature,
+                )
+        else:
+            for origin, destination in graph.edges():
+                edge_key = self._normalizar_arista(origin, destination)
+                x1, y1 = pos[origin]
+                x2, y2 = pos[destination]
+
+                origin_community = community_map.get(origin)
+                destination_community = community_map.get(destination)
+                between_communities = (
+                    origin_community is not None
+                    and destination_community is not None
+                    and origin_community != destination_community
+                )
+
+                if (
+                    active_merge
+                    and origin in active_nodes
+                    and destination in active_nodes
+                    and between_communities
+                ):
+                    color = "#2E8B57"
+                    line_width = 4.0
+                    zorder = 18
+                elif phase in {"communities", "final"} and between_communities:
+                    color = "#C62828"
+                    line_width = 3.2
+                    zorder = 16
+                elif edge_key in bridge_edges:
+                    color = "#F28E2B"
+                    line_width = 2.7
+                    zorder = 15
+                else:
+                    color = "#B8B8B8"
+                    line_width = 1.45
+                    zorder = 10
+
+                graph_ax.plot(
+                    [x1, x2],
+                    [y1, y2],
+                    color=color,
+                    linewidth=line_width,
+                    zorder=zorder,
+                )
+
+        normalized = self._normalizar_valores_analisis(scores)
+        palette = self._paleta_comunidades_analisis()
+
+        for node in graph.nodes():
+            normalized_value = normalized.get(node, 0.30)
+            node_size = 650 + 1500 * normalized_value
+            face_color = self._color_por_puntuacion_analisis(normalized_value)
+            edge_color = "#555555"
+            line_width = 1.4
+
+            if phase in {"communities", "final"}:
+                community_index = community_map.get(node, 0)
+                face_color = palette[community_index % len(palette)]
+                if phase == "final":
+                    node_size = 700 + 1700 * normalized_value
+                else:
+                    node_size = 820
+
+            if node in active_nodes:
+                edge_color = "#2E8B57"
+                line_width = 3.0
+                node_size += 160
+
+            if node == current_node:
+                face_color = "#E45756"
+                edge_color = "#7A1D1D"
+                line_width = 3.0
+                node_size += 200
+
+            collection = nx.draw_networkx_nodes(
+                graph,
+                pos,
+                nodelist=[node],
+                node_size=node_size,
+                node_color=face_color,
+                edgecolors=edge_color,
+                linewidths=line_width,
+                ax=graph_ax,
+            )
+            collection.set_zorder(25)
+
+        for node, (x, y) in pos.items():
+            graph_ax.text(
+                x,
+                y,
+                str(node),
+                fontsize=9.5,
+                fontweight="bold",
+                ha="center",
+                va="center",
+                color="black",
+                zorder=35,
+            )
+
+            if node in scores:
+                label = f"{scores[node]:.4f}"
+                if phase in {"communities"}:
+                    label = f"C{community_map.get(node, 0) + 1}"
+                elif phase == "final":
+                    label = (
+                        f"PR={scores[node]:.3f} · "
+                        f"C{community_map.get(node, 0) + 1}"
+                    )
+
+                graph_ax.text(
+                    x,
+                    y + 0.39,
+                    label,
+                    fontsize=6.7,
+                    fontweight="bold",
+                    ha="center",
+                    va="bottom",
+                    color="#222222",
+                    zorder=40,
+                    bbox={
+                        "boxstyle": "round,pad=0.16",
+                        "fc": "white",
+                        "ec": "#666666",
+                        "alpha": 0.96,
+                    },
+                )
+
+        graph_ax.text(
+            0.50,
+            0.015,
+            state.get("message", ""),
+            transform=graph_ax.transAxes,
+            fontsize=8.8,
+            ha="center",
+            va="bottom",
+            bbox={
+                "boxstyle": "round,pad=0.38",
+                "fc": "white",
+                "ec": "#777777",
+                "alpha": 0.96,
+            },
+            zorder=50,
+        )
+
+        status = state.get("status_text", "")
+        graph_ax.text(
+            0.99,
+            0.985,
+            status,
+            transform=graph_ax.transAxes,
+            fontsize=8.3,
+            ha="right",
+            va="top",
+            bbox={
+                "boxstyle": "round,pad=0.30",
+                "fc": "white",
+                "ec": "#999999",
+                "alpha": 0.96,
+            },
+            zorder=50,
+        )
+
+    def _dibujar_estado_centralidad(
+        self,
+        graph_ax,
+        info_ax,
+        structure_ax,
+        graph,
+        pagerank_graph,
+        pos,
+        state,
+    ):
+        """Dibuja un estado completo del análisis estructural."""
+
+        self._dibujar_grafo_centralidad(
+            graph_ax=graph_ax,
+            graph=graph,
+            pagerank_graph=pagerank_graph,
+            pos=pos,
+            state=state,
+        )
+        self._dibujar_tabla_centralidad(
+            ax=info_ax,
+            graph=graph,
+            state=state,
+        )
+        self._dibujar_panel_inferior_centralidad(
+            ax=structure_ax,
+            state=state,
+        )
+
+    def animate_centrality_pagerank_communities(
+        self,
+        graph,
+        pagerank_graph,
+        pos,
+        states,
+        title="Centralidad, PageRank y comunidades",
+        final_image_path=None,
+        repeat=False,
+    ):
+        """
+        Anima las métricas locales y globales y termina con comunidades.
+
+        La imagen final compara:
+        - grado;
+        - cercanía;
+        - intermediación;
+        - autovector;
+        - PageRank;
+        - comunidad detectada.
+        """
+
+        if not states:
+            raise ValueError(
+                "La lista de estados de centralidad no puede estar vacía."
+            )
+
+        (
+            fig,
+            graph_ax,
+            info_ax,
+            structure_ax,
+        ) = self._preparar_figura_centralidad(title)
+
+        if final_image_path is not None:
+            self._dibujar_estado_centralidad(
+                graph_ax=graph_ax,
+                info_ax=info_ax,
+                structure_ax=structure_ax,
+                graph=graph,
+                pagerank_graph=pagerank_graph,
+                pos=pos,
+                state=states[-1],
+            )
+
+            final_image_path = Path(final_image_path)
+            final_image_path.parent.mkdir(
+                parents=True,
+                exist_ok=True,
+            )
+            fig.savefig(
+                final_image_path,
+                dpi=200,
+                bbox_inches="tight",
+            )
+            print(f"Imagen final guardada en: {final_image_path}")
+
+        def init():
+            self._dibujar_estado_centralidad(
+                graph_ax=graph_ax,
+                info_ax=info_ax,
+                structure_ax=structure_ax,
+                graph=graph,
+                pagerank_graph=pagerank_graph,
+                pos=pos,
+                state=states[0],
+            )
+            return []
+
+        def update(frame_index):
+            self._dibujar_estado_centralidad(
+                graph_ax=graph_ax,
+                info_ax=info_ax,
+                structure_ax=structure_ax,
+                graph=graph,
+                pagerank_graph=pagerank_graph,
+                pos=pos,
+                state=states[frame_index],
+            )
+            return []
+
+        self.animation = FuncAnimation(
+            fig,
+            update,
+            frames=len(states),
+            init_func=init,
+            interval=self.interval,
+            repeat=repeat,
+            blit=False,
+        )
+
+        plt.show()
         return self.animation
