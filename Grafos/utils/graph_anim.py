@@ -18,7 +18,8 @@ class GraphAnimator:
     - caminos mínimos con A*,
     - caminos mínimos con Bellman-Ford,
     - caminos mínimos con Floyd-Warshall,
-    - árboles de expansión mínima con Prim y Kruskal.
+    - árboles de expansión mínima con Prim y Kruskal,
+    - Union-Find y componentes conectadas.
 
     Más adelante se podrá ampliar con otros algoritmos.
     """
@@ -6138,6 +6139,795 @@ class GraphAnimator:
                 pos=pos,
                 state=states[frame_index],
                 start_node=start_node,
+            )
+            return []
+
+        self.animation = FuncAnimation(
+            fig,
+            update,
+            frames=len(states),
+            init_func=init,
+            interval=self.interval,
+            repeat=repeat,
+            blit=False,
+        )
+
+        plt.show()
+
+        return self.animation
+
+    # ------------------------------------------------------------------
+    # Elementos específicos de Union-Find y componentes conectadas
+    # ------------------------------------------------------------------
+
+    def _preparar_figura_union_find(self, title):
+        """
+        Reutiliza la distribución visual de Dijkstra, A* y Prim.
+
+        Distribución:
+        - izquierda: padres, raíces, rangos y tamaños;
+        - derecha superior: grafo y componentes actuales;
+        - derecha inferior: aristas procesadas en orden.
+        """
+
+        return self._preparar_figura_dijkstra(title)
+
+    @staticmethod
+    def _paleta_componentes_union_find():
+        """
+        Devuelve una paleta suficientemente amplia para el ejemplo.
+        """
+
+        return [
+            "#B7D7F0",
+            "#FBE5A6",
+            "#D8C4E8",
+            "#B7E4C7",
+            "#F7C6C7",
+            "#CDE7E8",
+            "#E7D6B8",
+            "#D6E4B7",
+            "#D8D8F0",
+            "#F4D2A7",
+            "#C8D6E5",
+            "#D5E8D4",
+            "#FFE0B2",
+            "#E1BEE7",
+        ]
+
+    def _dibujar_leyenda_union_find(self, ax):
+        """
+        Dibuja la leyenda de Union-Find en el panel izquierdo.
+        """
+
+        elementos = [
+            Line2D(
+                [0],
+                [0],
+                marker="o",
+                color="none",
+                markerfacecolor="#B7D7F0",
+                markeredgecolor="#666666",
+                markersize=8,
+                label="Componente actual",
+            ),
+            Line2D(
+                [0],
+                [0],
+                marker="o",
+                color="none",
+                markerfacecolor="#E45756",
+                markeredgecolor="#7A1D1D",
+                markersize=8,
+                label="Primer extremo",
+            ),
+            Line2D(
+                [0],
+                [0],
+                marker="o",
+                color="none",
+                markerfacecolor="#F28E2B",
+                markeredgecolor="#8A4B08",
+                markersize=8,
+                label="Segundo extremo",
+            ),
+            Line2D(
+                [0],
+                [0],
+                color="#2E8B57",
+                linewidth=3,
+                label="Arista aceptada",
+            ),
+            Line2D(
+                [0],
+                [0],
+                color="#E45756",
+                linewidth=4,
+                label="Arista examinada",
+            ),
+            Line2D(
+                [0],
+                [0],
+                color="#F28E2B",
+                linewidth=3,
+                linestyle="dashed",
+                label="Rechazada por ciclo",
+            ),
+        ]
+
+        ax.legend(
+            handles=elementos,
+            loc="upper center",
+            bbox_to_anchor=(0.5, 0.925),
+            fontsize=6.9,
+            framealpha=0.97,
+            ncol=2,
+            columnspacing=0.7,
+            handlelength=2.0,
+            borderpad=0.50,
+        )
+
+    def _dibujar_tabla_union_find(
+        self,
+        ax,
+        nodes,
+        parents,
+        ranks,
+        sizes,
+        roots,
+        component_map,
+        components,
+        current_nodes,
+    ):
+        """
+        Dibuja una tarjeta por vértice.
+
+        Cada tarjeta contiene:
+        - padre inmediato;
+        - raíz de la componente;
+        - rango si el vértice es raíz;
+        - tamaño si el vértice es raíz.
+        """
+
+        ax.clear()
+        ax.axis("off")
+        ax.set_xlim(0, 1)
+        ax.set_ylim(0, 1)
+
+        ax.text(
+            0.50,
+            0.985,
+            "Union-Find · padres, raíces y rangos",
+            fontsize=10.7,
+            fontweight="bold",
+            ha="center",
+            va="top",
+        )
+
+        ax.text(
+            0.50,
+            0.945,
+            f"Componentes actuales: {len(components)}",
+            fontsize=8.5,
+            ha="center",
+            va="top",
+            color="#444444",
+        )
+
+        palette = self._paleta_componentes_union_find()
+        canonical_components = sorted(set(component_map.values()))
+        component_color = {
+            component: palette[index % len(palette)]
+            for index, component in enumerate(canonical_components)
+        }
+
+        number_of_columns = 2
+        card_width = 0.405
+        card_height = 0.074
+        horizontal_gap = 0.055
+        vertical_gap = 0.012
+
+        total_width = (
+            number_of_columns * card_width
+            + (number_of_columns - 1) * horizontal_gap
+        )
+
+        initial_x = (1 - total_width) / 2
+        top_y = 0.685
+
+        current_nodes = set(current_nodes or [])
+
+        for index, node in enumerate(nodes):
+            row = index // number_of_columns
+            column = index % number_of_columns
+
+            x = initial_x + column * (card_width + horizontal_gap)
+            y = top_y - row * (card_height + vertical_gap)
+
+            parent = parents.get(node, node)
+            root = roots.get(node, node)
+            component = component_map.get(node, node)
+            is_root = parent == node
+
+            face_color = component_color.get(component, "#E5E5E5")
+            edge_color = "#666666"
+            line_width = 1.4
+
+            if node in current_nodes:
+                edge_color = "#C62828"
+                line_width = 3.0
+
+            rectangle = Rectangle(
+                (x, y),
+                card_width,
+                card_height,
+                facecolor=face_color,
+                edgecolor=edge_color,
+                linewidth=line_width,
+            )
+            ax.add_patch(rectangle)
+
+            rank_text = ranks.get(node, 0) if is_root else "—"
+            size_text = sizes.get(node, 1) if is_root else "—"
+
+            ax.text(
+                x + card_width * 0.10,
+                y + card_height * 0.66,
+                str(node),
+                fontsize=8.8,
+                fontweight="bold",
+                ha="center",
+                va="center",
+            )
+
+            ax.text(
+                x + card_width * 0.27,
+                y + card_height * 0.66,
+                f"p={parent}",
+                fontsize=6.9,
+                ha="left",
+                va="center",
+            )
+
+            ax.text(
+                x + card_width * 0.62,
+                y + card_height * 0.66,
+                f"raíz={root}",
+                fontsize=6.8,
+                ha="left",
+                va="center",
+            )
+
+            ax.text(
+                x + card_width * 0.27,
+                y + card_height * 0.27,
+                f"rango={rank_text}",
+                fontsize=6.5,
+                ha="left",
+                va="center",
+            )
+
+            ax.text(
+                x + card_width * 0.62,
+                y + card_height * 0.27,
+                f"tam={size_text}",
+                fontsize=6.5,
+                ha="left",
+                va="center",
+            )
+
+        ax.text(
+            0.50,
+            0.050,
+            (
+                "p: padre inmediato   ·   "
+                "raíz: representante   ·   "
+                "tam: tamaño de la raíz"
+            ),
+            fontsize=6.2,
+            ha="center",
+            va="center",
+            color="#444444",
+        )
+
+        self._dibujar_leyenda_union_find(ax)
+
+    def _dibujar_lista_aristas_union_find(
+        self,
+        ax,
+        edge_order,
+        edge_statuses,
+        active_edge_index,
+        action,
+        component_count,
+        accepted_count,
+        rejected_count,
+    ):
+        """
+        Dibuja la secuencia de aristas procesadas.
+
+        Estados:
+        - amarillo: pendiente;
+        - rojo: arista actual;
+        - verde: unión aceptada;
+        - naranja: rechazada porque formaría un ciclo.
+        """
+
+        ax.clear()
+        ax.axis("off")
+        ax.set_xlim(0, 1)
+        ax.set_ylim(0, 1)
+
+        ax.text(
+            0.02,
+            0.88,
+            "Aristas procesadas por Union-Find",
+            fontsize=11.7,
+            fontweight="bold",
+            ha="left",
+            va="center",
+        )
+
+        ax.text(
+            0.98,
+            0.88,
+            (
+                f"componentes: {component_count}"
+                f"  ·  uniones: {accepted_count}"
+                f"  ·  ciclos: {rejected_count}"
+            ),
+            fontsize=8.2,
+            ha="right",
+            va="center",
+            color="#444444",
+        )
+
+        number_of_columns = 8
+        number_of_rows = (
+            len(edge_order) + number_of_columns - 1
+        ) // number_of_columns
+
+        cell_width = 0.095
+        cell_height = 0.25
+        horizontal_gap = 0.012
+        vertical_gap = 0.075
+
+        total_width = (
+            number_of_columns * cell_width
+            + (number_of_columns - 1) * horizontal_gap
+        )
+
+        initial_x = (1 - total_width) / 2
+        top_y = 0.49
+
+        for index, (origin, destination) in enumerate(edge_order):
+            row = index // number_of_columns
+            column = index % number_of_columns
+
+            x = initial_x + column * (cell_width + horizontal_gap)
+            y = top_y - row * (cell_height + vertical_gap)
+
+            status = edge_statuses.get(index, "pending")
+            is_current = index == active_edge_index
+
+            if is_current:
+                if action == "rejected":
+                    face_color = "#F6B4B4"
+                    edge_color = "#C62828"
+                elif action == "accepted":
+                    face_color = "#B7E4C7"
+                    edge_color = "#2E8B57"
+                else:
+                    face_color = "#E45756"
+                    edge_color = "#7A1D1D"
+                line_width = 2.2
+            elif status == "accepted":
+                face_color = "#B7E4C7"
+                edge_color = "#2E8B57"
+                line_width = 1.5
+            elif status == "rejected":
+                face_color = "#F8D7B5"
+                edge_color = "#F28E2B"
+                line_width = 1.5
+            else:
+                face_color = "#FBE5A6"
+                edge_color = "#8A6D1D"
+                line_width = 1.4
+
+            rectangle = Rectangle(
+                (x, y),
+                cell_width,
+                cell_height,
+                facecolor=face_color,
+                edgecolor=edge_color,
+                linewidth=line_width,
+            )
+            ax.add_patch(rectangle)
+
+            ax.text(
+                x + cell_width / 2,
+                y + cell_height * 0.66,
+                f"{origin}—{destination}",
+                fontsize=7.0,
+                fontweight="bold",
+                ha="center",
+                va="center",
+            )
+
+            if status == "accepted":
+                status_text = "✓ unión"
+            elif status == "rejected":
+                status_text = "× ciclo"
+            elif is_current:
+                status_text = "find"
+            else:
+                status_text = "pendiente"
+
+            ax.text(
+                x + cell_width / 2,
+                y + cell_height * 0.28,
+                status_text,
+                fontsize=6.4,
+                ha="center",
+                va="center",
+            )
+
+        if number_of_rows == 1:
+            ax.set_ylim(0.10, 1.0)
+
+    def _dibujar_estado_union_find(
+        self,
+        graph_ax,
+        info_ax,
+        structure_ax,
+        graph,
+        pos,
+        state,
+    ):
+        """
+        Dibuja un estado completo de Union-Find.
+        """
+
+        graph_ax.clear()
+        graph_ax.axis("off")
+
+        limits = self._calcular_limites(
+            pos,
+            margin_x=1.2,
+            margin_y=1.0,
+        )
+
+        graph_ax.set_xlim(limits[0], limits[1])
+        graph_ax.set_ylim(limits[2], limits[3])
+        graph_ax.set_aspect("equal", adjustable="box")
+
+        parents = dict(state.get("parents", {}))
+        ranks = dict(state.get("ranks", {}))
+        sizes = dict(state.get("sizes", {}))
+        roots = dict(state.get("roots", {}))
+        component_map = dict(state.get("component_map", {}))
+        components = list(state.get("components", []))
+
+        edge_order = list(state.get("edge_order", []))
+        edge_statuses = dict(state.get("edge_statuses", {}))
+        accepted_edges = list(state.get("accepted_edges", []))
+        rejected_edges = list(state.get("rejected_edges", []))
+        active_edge = state.get("active_edge")
+        active_edge_index = state.get("active_edge_index")
+        action = state.get("action")
+        phase = state.get("phase", "processing")
+
+        accepted_normalized = {
+            self._normalizar_arista(u, v)
+            for u, v in accepted_edges
+        }
+        rejected_normalized = {
+            self._normalizar_arista(u, v)
+            for u, v in rejected_edges
+        }
+
+        active_normalized = None
+        current_nodes = set()
+
+        if active_edge is not None:
+            active_normalized = self._normalizar_arista(*active_edge)
+            current_nodes = set(active_edge)
+
+        # 1. Aristas.
+        for origin, destination in graph.edges():
+            x1, y1 = pos[origin]
+            x2, y2 = pos[destination]
+            edge_key = self._normalizar_arista(origin, destination)
+
+            if edge_key == active_normalized:
+                if action == "rejected":
+                    color = "#F28E2B"
+                    line_style = "dashed"
+                else:
+                    color = "#E45756"
+                    line_style = "solid"
+                line_width = 4.2
+                zorder = 20
+            elif edge_key in accepted_normalized:
+                color = "#2E8B57"
+                line_style = "solid"
+                line_width = 3.2
+                zorder = 17
+            elif edge_key in rejected_normalized:
+                color = "#F28E2B"
+                line_style = "dashed"
+                line_width = 2.2
+                zorder = 14
+            else:
+                color = "#B8B8B8"
+                line_style = "solid"
+                line_width = 1.6
+                zorder = 10
+
+            graph_ax.plot(
+                [x1, x2],
+                [y1, y2],
+                color=color,
+                linewidth=line_width,
+                linestyle=line_style,
+                zorder=zorder,
+            )
+
+        # 2. Colores de las componentes.
+        palette = self._paleta_componentes_union_find()
+        canonical_components = sorted(set(component_map.values()))
+        component_color = {
+            component: palette[index % len(palette)]
+            for index, component in enumerate(canonical_components)
+        }
+
+        component_sizes = {
+            component[0]: len(component[1])
+            for component in components
+        }
+
+        first_endpoint = active_edge[0] if active_edge else None
+        second_endpoint = active_edge[1] if active_edge else None
+
+        for node in graph.nodes():
+            component = component_map.get(node, node)
+            color = component_color.get(component, "#D9D9D9")
+            edge_color = "#666666"
+            node_size = 790
+
+            if (
+                phase == "finished"
+                and component_sizes.get(component, 1) == 1
+            ):
+                color = "#D9D9D9"
+
+            if node == first_endpoint:
+                color = "#E45756"
+                edge_color = "#7A1D1D"
+                node_size = 930
+            elif node == second_endpoint:
+                color = "#F28E2B"
+                edge_color = "#8A4B08"
+                node_size = 900
+
+            collection = nx.draw_networkx_nodes(
+                graph,
+                pos,
+                nodelist=[node],
+                node_size=node_size,
+                node_color=color,
+                edgecolors=edge_color,
+                linewidths=2.4 if node in current_nodes else 1.5,
+                ax=graph_ax,
+            )
+            collection.set_zorder(25)
+
+        # 3. Etiquetas.
+        for node, (x, y) in pos.items():
+            graph_ax.text(
+                x,
+                y,
+                str(node),
+                fontsize=10,
+                fontweight="bold",
+                ha="center",
+                va="center",
+                color="black",
+                zorder=35,
+            )
+
+            graph_ax.text(
+                x,
+                y + 0.39,
+                f"raíz={roots.get(node, node)}",
+                fontsize=7.0,
+                fontweight="bold",
+                ha="center",
+                va="bottom",
+                color="#222222",
+                zorder=40,
+                bbox={
+                    "boxstyle": "round,pad=0.18",
+                    "fc": "white",
+                    "ec": "#555555",
+                    "alpha": 0.97,
+                },
+            )
+
+        # 4. Operación find/union.
+        find_path_u = list(state.get("find_path_u", []))
+        find_path_v = list(state.get("find_path_v", []))
+        root_u = state.get("root_u")
+        root_v = state.get("root_v")
+
+        if active_edge is not None and find_path_u and find_path_v:
+            origin, destination = active_edge
+
+            operation_text = (
+                f"find({origin}): {' → '.join(map(str, find_path_u))}"
+                f" = {root_u}"
+                f"   |   "
+                f"find({destination}): {' → '.join(map(str, find_path_v))}"
+                f" = {root_v}"
+            )
+
+            graph_ax.text(
+                0.50,
+                0.965,
+                operation_text,
+                transform=graph_ax.transAxes,
+                fontsize=7.9,
+                ha="center",
+                va="top",
+                bbox={
+                    "boxstyle": "round,pad=0.28",
+                    "fc": "white",
+                    "ec": "#999999",
+                    "alpha": 0.96,
+                },
+                zorder=50,
+            )
+
+        # 5. Mensajes y resumen.
+        graph_ax.text(
+            0.50,
+            0.015,
+            state.get("message", ""),
+            transform=graph_ax.transAxes,
+            fontsize=9.0,
+            ha="center",
+            va="bottom",
+            bbox={
+                "boxstyle": "round,pad=0.38",
+                "fc": "white",
+                "ec": "#777777",
+                "alpha": 0.96,
+            },
+            zorder=50,
+        )
+
+        graph_ax.text(
+            0.99,
+            0.985,
+            (
+                f"Componentes: {len(components)}"
+                f"  ·  uniones: {len(accepted_edges)}"
+                f"  ·  ciclos: {len(rejected_edges)}"
+            ),
+            transform=graph_ax.transAxes,
+            fontsize=8.7,
+            ha="right",
+            va="top",
+            bbox={
+                "boxstyle": "round,pad=0.30",
+                "fc": "white",
+                "ec": "#999999",
+                "alpha": 0.96,
+            },
+            zorder=50,
+        )
+
+        self._dibujar_tabla_union_find(
+            ax=info_ax,
+            nodes=sorted(graph.nodes()),
+            parents=parents,
+            ranks=ranks,
+            sizes=sizes,
+            roots=roots,
+            component_map=component_map,
+            components=components,
+            current_nodes=current_nodes,
+        )
+
+        self._dibujar_lista_aristas_union_find(
+            ax=structure_ax,
+            edge_order=edge_order,
+            edge_statuses=edge_statuses,
+            active_edge_index=active_edge_index,
+            action=action,
+            component_count=len(components),
+            accepted_count=len(accepted_edges),
+            rejected_count=len(rejected_edges),
+        )
+
+    def animate_union_find_components(
+        self,
+        graph,
+        pos,
+        states,
+        title="Union-Find y componentes conectadas",
+        final_image_path=None,
+        repeat=False,
+    ):
+        """
+        Anima el procesamiento incremental de las aristas con Union-Find.
+
+        La imagen final muestra:
+        - componentes conectadas;
+        - padres, raíces, rangos y tamaños;
+        - bosque de aristas aceptadas;
+        - aristas rechazadas porque formarían ciclos;
+        - vértices aislados.
+        """
+
+        if not states:
+            raise ValueError(
+                "La lista de estados de Union-Find no puede estar vacía."
+            )
+
+        (
+            fig,
+            graph_ax,
+            info_ax,
+            structure_ax,
+        ) = self._preparar_figura_union_find(title)
+
+        if final_image_path is not None:
+            self._dibujar_estado_union_find(
+                graph_ax=graph_ax,
+                info_ax=info_ax,
+                structure_ax=structure_ax,
+                graph=graph,
+                pos=pos,
+                state=states[-1],
+            )
+
+            final_image_path = Path(final_image_path)
+            final_image_path.parent.mkdir(
+                parents=True,
+                exist_ok=True,
+            )
+
+            fig.savefig(
+                final_image_path,
+                dpi=200,
+                bbox_inches="tight",
+            )
+
+            print(
+                f"Imagen final guardada en: "
+                f"{final_image_path}"
+            )
+
+        def init():
+            self._dibujar_estado_union_find(
+                graph_ax=graph_ax,
+                info_ax=info_ax,
+                structure_ax=structure_ax,
+                graph=graph,
+                pos=pos,
+                state=states[0],
+            )
+            return []
+
+        def update(frame_index):
+            self._dibujar_estado_union_find(
+                graph_ax=graph_ax,
+                info_ax=info_ax,
+                structure_ax=structure_ax,
+                graph=graph,
+                pos=pos,
+                state=states[frame_index],
             )
             return []
 
