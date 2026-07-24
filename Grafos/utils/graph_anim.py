@@ -14,9 +14,10 @@ class GraphAnimator:
     Incluye métodos para:
     - búsqueda en anchura (BFS),
     - búsqueda en profundidad (DFS),
-    - caminos mínimos con Dijkstra.
+    - caminos mínimos con Dijkstra,
+    - caminos mínimos con A*.
 
-    Más adelante se podrá ampliar con animaciones para A*, Prim,
+    Más adelante se podrá ampliar con animaciones para Prim,
     Kruskal y otros algoritmos.
     """
 
@@ -2012,6 +2013,848 @@ class GraphAnimator:
 
         def update(frame_index):
             self._dibujar_estado_dijkstra(
+                graph_ax=graph_ax,
+                table_ax=table_ax,
+                queue_ax=queue_ax,
+                graph=graph,
+                pos=pos,
+                state=states[frame_index],
+                source_node=source_node,
+                target_node=target_node,
+            )
+            return []
+
+        self.animation = FuncAnimation(
+            fig,
+            update,
+            frames=len(states),
+            init_func=init,
+            interval=self.interval,
+            repeat=repeat,
+            blit=False,
+        )
+
+        plt.show()
+
+        return self.animation
+
+    # ------------------------------------------------------------------
+    # Elementos específicos de A*
+    # ------------------------------------------------------------------
+
+    def _preparar_figura_astar(self, title):
+        """
+        Reutiliza la misma distribución visual empleada por Dijkstra.
+
+        Esto permite comparar ambos algoritmos sobre:
+        - el mismo grafo;
+        - las mismas posiciones;
+        - tarjetas equivalentes;
+        - una cola de prioridad situada bajo el grafo.
+        """
+
+        return self._preparar_figura_dijkstra(title)
+
+    def _dibujar_leyenda_astar(self, ax):
+        """
+        Dibuja la leyenda de A* en el panel izquierdo.
+        """
+
+        elementos = [
+            Line2D(
+                [0],
+                [0],
+                marker="o",
+                color="none",
+                markerfacecolor="#D9D9D9",
+                markeredgecolor="#666666",
+                markersize=8,
+                label="No descubierto",
+            ),
+            Line2D(
+                [0],
+                [0],
+                marker="o",
+                color="none",
+                markerfacecolor="#F6C85F",
+                markeredgecolor="#8A6D1D",
+                markersize=8,
+                label="Conjunto abierto",
+            ),
+            Line2D(
+                [0],
+                [0],
+                marker="o",
+                color="none",
+                markerfacecolor="#E45756",
+                markeredgecolor="#7A1D1D",
+                markersize=8,
+                label="Vértice actual",
+            ),
+            Line2D(
+                [0],
+                [0],
+                marker="o",
+                color="none",
+                markerfacecolor="#4C9ED9",
+                markeredgecolor="#1F4F73",
+                markersize=8,
+                label="Conjunto cerrado",
+            ),
+            Line2D(
+                [0],
+                [0],
+                color="#2E8B57",
+                linewidth=3,
+                label="Árbol de predecesores",
+            ),
+            Line2D(
+                [0],
+                [0],
+                color="#D62728",
+                linewidth=4,
+                label="Camino mínimo final",
+            ),
+        ]
+
+        ax.legend(
+            handles=elementos,
+            loc="upper center",
+            bbox_to_anchor=(0.5, 0.92),
+            fontsize=7.1,
+            framealpha=0.97,
+            ncol=2,
+            columnspacing=0.8,
+            handlelength=2.1,
+            borderpad=0.55,
+        )
+
+    def _dibujar_tabla_astar(
+        self,
+        ax,
+        nodes,
+        g_scores,
+        h_scores,
+        f_scores,
+        predecessors,
+        open_nodes,
+        closed_nodes,
+        current,
+    ):
+        """
+        Dibuja tarjetas compactas con los valores de A*.
+
+        Cada tarjeta contiene:
+        - g: coste real acumulado;
+        - h: estimación restante;
+        - f = g + h;
+        - predecesor.
+
+        Colores:
+        - gris: no descubierto;
+        - amarillo: conjunto abierto;
+        - azul: conjunto cerrado;
+        - borde rojo: vértice actual.
+        """
+
+        ax.clear()
+        ax.axis("off")
+        ax.set_xlim(0, 1)
+        ax.set_ylim(0, 1)
+
+        ax.text(
+            0.50,
+            0.985,
+            "Valores de A*: g, h, f y predecesor",
+            fontsize=10.8,
+            fontweight="bold",
+            ha="center",
+            va="top",
+        )
+
+        number_of_columns = 2
+
+        card_width = 0.405
+        card_height = 0.086
+        horizontal_gap = 0.055
+        vertical_gap = 0.014
+
+        total_width = (
+            number_of_columns * card_width
+            + (number_of_columns - 1) * horizontal_gap
+        )
+
+        initial_x = (1 - total_width) / 2
+        top_y = 0.675
+
+        for index, node in enumerate(nodes):
+            row = index // number_of_columns
+            column = index % number_of_columns
+
+            x = initial_x + column * (card_width + horizontal_gap)
+            y = top_y - row * (card_height + vertical_gap)
+
+            g_value = g_scores.get(node, float("inf"))
+            h_value = h_scores.get(node, float("inf"))
+            f_value = f_scores.get(node, float("inf"))
+            predecessor = predecessors.get(node)
+
+            if node in closed_nodes:
+                face_color = "#B7D7F0"
+                edge_color = "#1F4F73"
+            elif node in open_nodes:
+                face_color = "#FBE5A6"
+                edge_color = "#8A6D1D"
+            else:
+                face_color = "#E5E5E5"
+                edge_color = "#777777"
+
+            line_width = 1.5
+
+            if node == current:
+                edge_color = "#C62828"
+                line_width = 3.0
+
+            rectangle = Rectangle(
+                (x, y),
+                card_width,
+                card_height,
+                facecolor=face_color,
+                edgecolor=edge_color,
+                linewidth=line_width,
+            )
+            ax.add_patch(rectangle)
+
+            predecessor_text = (
+                "—"
+                if predecessor is None
+                else str(predecessor)
+            )
+
+            ax.text(
+                x + card_width * 0.10,
+                y + card_height * 0.66,
+                str(node),
+                fontsize=9,
+                fontweight="bold",
+                ha="center",
+                va="center",
+            )
+
+            ax.text(
+                x + card_width * 0.27,
+                y + card_height * 0.66,
+                f"g={self._formatear_distancia(g_value)}",
+                fontsize=7.0,
+                ha="left",
+                va="center",
+            )
+
+            ax.text(
+                x + card_width * 0.62,
+                y + card_height * 0.66,
+                f"h={self._formatear_distancia(h_value)}",
+                fontsize=7.0,
+                ha="left",
+                va="center",
+            )
+
+            ax.text(
+                x + card_width * 0.27,
+                y + card_height * 0.28,
+                f"f={self._formatear_distancia(f_value)}",
+                fontsize=7.0,
+                ha="left",
+                va="center",
+            )
+
+            ax.text(
+                x + card_width * 0.62,
+                y + card_height * 0.28,
+                f"pred={predecessor_text}",
+                fontsize=6.9,
+                ha="left",
+                va="center",
+            )
+
+        ax.text(
+            0.50,
+            0.055,
+            (
+                "Gris: no descubierto   ·   "
+                "Amarillo: abierto   ·   "
+                "Azul: cerrado"
+            ),
+            fontsize=6.6,
+            ha="center",
+            va="center",
+            color="#444444",
+        )
+
+        self._dibujar_leyenda_astar(ax)
+
+    def _dibujar_cola_prioridad_astar(
+        self,
+        ax,
+        priority_queue,
+    ):
+        """
+        Dibuja la cola de prioridad de A* debajo del grafo.
+
+        Cada entrada se representa mediante:
+        - el vértice;
+        - su prioridad f;
+        - su valor heurístico h.
+
+        La primera celda es el candidato con menor tupla (f, h).
+        """
+
+        ax.clear()
+        ax.axis("off")
+        ax.set_xlim(0, 1)
+        ax.set_ylim(0, 1)
+
+        ax.text(
+            0.02,
+            0.82,
+            "Cola de prioridad de A*",
+            fontsize=12,
+            fontweight="bold",
+            ha="left",
+            va="center",
+        )
+
+        ax.text(
+            0.02,
+            0.41,
+            "Menor f",
+            fontsize=8.5,
+            ha="left",
+            va="center",
+        )
+
+        ax.text(
+            0.98,
+            0.41,
+            "Prioridad mayor",
+            fontsize=8.5,
+            ha="right",
+            va="center",
+        )
+
+        queue_sorted = sorted(priority_queue)
+
+        if not queue_sorted:
+            ax.text(
+                0.50,
+                0.41,
+                "Cola vacía",
+                fontsize=11.5,
+                fontweight="bold",
+                ha="center",
+                va="center",
+                bbox={
+                    "boxstyle": "round,pad=0.42",
+                    "fc": "white",
+                    "ec": "#777777",
+                    "alpha": 0.98,
+                },
+            )
+            return
+
+        max_cells = 10
+        visible_queue = queue_sorted[:max_cells]
+
+        initial_x = 0.12
+        final_x = 0.88
+        total_width = final_x - initial_x
+        cell_width = min(
+            0.078,
+            total_width / max(len(visible_queue), 1),
+        )
+        gap = 0.009
+
+        occupied_width = (
+            len(visible_queue) * cell_width
+            + max(0, len(visible_queue) - 1) * gap
+        )
+
+        current_x = 0.50 - occupied_width / 2
+
+        for index, (f_value, h_value, node) in enumerate(visible_queue):
+            is_minimum = index == 0
+
+            rectangle = Rectangle(
+                (current_x, 0.20),
+                cell_width,
+                0.43,
+                facecolor="#E45756" if is_minimum else "#F6C85F",
+                edgecolor="#7A1D1D" if is_minimum else "#8A6D1D",
+                linewidth=2.0 if is_minimum else 1.5,
+            )
+            ax.add_patch(rectangle)
+
+            ax.text(
+                current_x + cell_width / 2,
+                0.49,
+                str(node),
+                fontsize=8.8,
+                fontweight="bold",
+                ha="center",
+                va="center",
+            )
+
+            ax.text(
+                current_x + cell_width / 2,
+                0.36,
+                f"f={self._formatear_distancia(f_value)}",
+                fontsize=7.1,
+                ha="center",
+                va="center",
+            )
+
+            ax.text(
+                current_x + cell_width / 2,
+                0.25,
+                f"h={self._formatear_distancia(h_value)}",
+                fontsize=6.8,
+                ha="center",
+                va="center",
+            )
+
+            if is_minimum:
+                ax.text(
+                    current_x + cell_width / 2,
+                    0.12,
+                    "siguiente",
+                    fontsize=6.5,
+                    ha="center",
+                    va="top",
+                )
+
+            current_x += cell_width + gap
+
+        if len(queue_sorted) > max_cells:
+            ax.text(
+                0.91,
+                0.41,
+                f"+{len(queue_sorted) - max_cells}",
+                fontsize=9,
+                fontweight="bold",
+                ha="left",
+                va="center",
+            )
+
+    def _dibujar_estado_astar(
+        self,
+        graph_ax,
+        table_ax,
+        queue_ax,
+        graph,
+        pos,
+        state,
+        source_node,
+        target_node,
+    ):
+        """
+        Dibuja un estado completo del algoritmo A*.
+        """
+
+        graph_ax.clear()
+        graph_ax.axis("off")
+
+        limits = self._calcular_limites(
+            pos,
+            margin_x=1.2,
+            margin_y=1.0,
+        )
+
+        graph_ax.set_xlim(limits[0], limits[1])
+        graph_ax.set_ylim(limits[2], limits[3])
+        graph_ax.set_aspect("equal", adjustable="box")
+
+        current = state.get("current")
+        g_scores = dict(state.get("g_scores", {}))
+        h_scores = dict(state.get("h_scores", {}))
+        f_scores = dict(state.get("f_scores", {}))
+        predecessors = dict(state.get("predecessors", {}))
+        open_nodes = set(state.get("open_nodes", set()))
+        closed_nodes = set(state.get("closed_nodes", set()))
+        priority_queue = list(state.get("priority_queue", []))
+        active_edge = state.get("active_edge")
+        action = state.get("action")
+        final_path = list(state.get("final_path", []))
+
+        predecessor_edges = {
+            self._normalizar_arista(predecessor, node)
+            for node, predecessor in predecessors.items()
+            if predecessor is not None
+        }
+
+        final_path_edges = {
+            self._normalizar_arista(u, v)
+            for u, v in zip(final_path[:-1], final_path[1:])
+        }
+
+        active_edge_normalized = None
+
+        if active_edge is not None:
+            active_edge_normalized = self._normalizar_arista(*active_edge)
+
+        # 1. Aristas y pesos.
+        for u, v, data in graph.edges(data=True):
+            x1, y1 = pos[u]
+            x2, y2 = pos[v]
+
+            edge_key = self._normalizar_arista(u, v)
+
+            if edge_key == active_edge_normalized:
+                color = (
+                    "#F28E2B"
+                    if action == "no_improvement"
+                    else "#E45756"
+                )
+                line_width = 4.2
+                zorder = 20
+            elif edge_key in final_path_edges:
+                color = "#D62728"
+                line_width = 4.3
+                zorder = 18
+            elif edge_key in predecessor_edges:
+                color = "#2E8B57"
+                line_width = 3.0
+                zorder = 15
+            else:
+                color = "#B8B8B8"
+                line_width = 1.7
+                zorder = 10
+
+            graph_ax.plot(
+                [x1, x2],
+                [y1, y2],
+                color=color,
+                linewidth=line_width,
+                zorder=zorder,
+            )
+
+            self._dibujar_peso_arista(
+                ax=graph_ax,
+                pos=pos,
+                origen=u,
+                destino=v,
+                peso=data.get("weight", 1),
+            )
+
+        # 2. Estados de los nodos.
+        undiscovered_nodes = [
+            node
+            for node in graph.nodes()
+            if (
+                node not in open_nodes
+                and node not in closed_nodes
+                and node != current
+            )
+        ]
+
+        open_nodes_to_draw = [
+            node
+            for node in open_nodes
+            if node != current
+        ]
+
+        closed_nodes_to_draw = [
+            node
+            for node in closed_nodes
+            if node != current
+        ]
+
+        if undiscovered_nodes:
+            collection = nx.draw_networkx_nodes(
+                graph,
+                pos,
+                nodelist=undiscovered_nodes,
+                node_size=760,
+                node_color="#D9D9D9",
+                edgecolors="#666666",
+                linewidths=1.3,
+                ax=graph_ax,
+            )
+            collection.set_zorder(22)
+
+        if open_nodes_to_draw:
+            collection = nx.draw_networkx_nodes(
+                graph,
+                pos,
+                nodelist=open_nodes_to_draw,
+                node_size=790,
+                node_color="#F6C85F",
+                edgecolors="#8A6D1D",
+                linewidths=1.6,
+                ax=graph_ax,
+            )
+            collection.set_zorder(23)
+
+        if closed_nodes_to_draw:
+            collection = nx.draw_networkx_nodes(
+                graph,
+                pos,
+                nodelist=closed_nodes_to_draw,
+                node_size=790,
+                node_color="#4C9ED9",
+                edgecolors="#1F4F73",
+                linewidths=1.6,
+                ax=graph_ax,
+            )
+            collection.set_zorder(23)
+
+        if current is not None:
+            collection = nx.draw_networkx_nodes(
+                graph,
+                pos,
+                nodelist=[current],
+                node_size=930,
+                node_color="#E45756",
+                edgecolors="#7A1D1D",
+                linewidths=2.5,
+                ax=graph_ax,
+            )
+            collection.set_zorder(26)
+
+        # 3. Etiquetas de nodos y valores g/f.
+        for node, (x, y) in pos.items():
+            graph_ax.text(
+                x,
+                y,
+                str(node),
+                fontsize=10,
+                fontweight="bold",
+                ha="center",
+                va="center",
+                color="black",
+                zorder=35,
+            )
+
+            g_text = self._formatear_distancia(
+                g_scores.get(node, float("inf"))
+            )
+            f_text = self._formatear_distancia(
+                f_scores.get(node, float("inf"))
+            )
+
+            graph_ax.text(
+                x,
+                y + 0.39,
+                f"g={g_text} | f={f_text}",
+                fontsize=7.0,
+                fontweight="bold",
+                ha="center",
+                va="bottom",
+                color="#222222",
+                zorder=40,
+                bbox={
+                    "boxstyle": "round,pad=0.18",
+                    "fc": "white",
+                    "ec": "#555555",
+                    "alpha": 0.97,
+                },
+            )
+
+        # 4. Origen y destino.
+        source_x, source_y = pos[source_node]
+        target_x, target_y = pos[target_node]
+
+        graph_ax.text(
+            source_x,
+            source_y - 0.43,
+            "origen",
+            fontsize=8,
+            fontweight="bold",
+            ha="center",
+            va="top",
+            color="#7A1D1D",
+            zorder=40,
+        )
+
+        graph_ax.text(
+            target_x,
+            target_y - 0.43,
+            "destino",
+            fontsize=8,
+            fontweight="bold",
+            ha="center",
+            va="top",
+            color="#7A1D1D",
+            zorder=40,
+        )
+
+        # 5. Mensaje y relajación.
+        graph_ax.text(
+            0.50,
+            0.015,
+            state.get("message", ""),
+            transform=graph_ax.transAxes,
+            fontsize=9.2,
+            ha="center",
+            va="bottom",
+            bbox={
+                "boxstyle": "round,pad=0.38",
+                "fc": "white",
+                "ec": "#777777",
+                "alpha": 0.96,
+            },
+            zorder=50,
+        )
+
+        candidate_g = state.get("candidate_g")
+        candidate_f = state.get("candidate_f")
+        old_g = state.get("old_g")
+        edge_weight = state.get("edge_weight")
+
+        if active_edge is not None and candidate_g is not None:
+            origin, destination = active_edge
+
+            operation_text = (
+                f"Relajación {origin}→{destination}: "
+                f"g candidato = "
+                f"{self._formatear_distancia(g_scores.get(origin, float('inf')))}"
+                f" + {self._formatear_distancia(edge_weight)}"
+                f" = {self._formatear_distancia(candidate_g)}"
+                f"  |  g anterior: {self._formatear_distancia(old_g)}"
+                f"  |  f candidato: {self._formatear_distancia(candidate_f)}"
+            )
+
+            graph_ax.text(
+                0.50,
+                0.965,
+                operation_text,
+                transform=graph_ax.transAxes,
+                fontsize=7.9,
+                ha="center",
+                va="top",
+                bbox={
+                    "boxstyle": "round,pad=0.28",
+                    "fc": "white",
+                    "ec": "#999999",
+                    "alpha": 0.96,
+                },
+                zorder=50,
+            )
+
+        graph_ax.text(
+            0.99,
+            0.985,
+            (
+                f"Cerrados: {len(closed_nodes)} de "
+                f"{graph.number_of_nodes()}"
+            ),
+            transform=graph_ax.transAxes,
+            fontsize=9,
+            ha="right",
+            va="top",
+            bbox={
+                "boxstyle": "round,pad=0.30",
+                "fc": "white",
+                "ec": "#999999",
+                "alpha": 0.96,
+            },
+            zorder=50,
+        )
+
+        self._dibujar_tabla_astar(
+            ax=table_ax,
+            nodes=sorted(graph.nodes()),
+            g_scores=g_scores,
+            h_scores=h_scores,
+            f_scores=f_scores,
+            predecessors=predecessors,
+            open_nodes=open_nodes,
+            closed_nodes=closed_nodes,
+            current=current,
+        )
+
+        self._dibujar_cola_prioridad_astar(
+            ax=queue_ax,
+            priority_queue=priority_queue,
+        )
+
+    def animate_astar(
+        self,
+        graph,
+        pos,
+        states,
+        source_node,
+        target_node,
+        title="Caminos mínimos con A*",
+        final_image_path=None,
+        repeat=False,
+    ):
+        """
+        Anima A* con la misma estructura visual utilizada por Dijkstra.
+
+        La imagen final muestra:
+        - valores g, h y f;
+        - predecesores;
+        - conjuntos abierto y cerrado;
+        - candidatos que no fue necesario expandir;
+        - camino mínimo final.
+        """
+
+        if not states:
+            raise ValueError(
+                "La lista de estados de A* no puede estar vacía."
+            )
+
+        (
+            fig,
+            graph_ax,
+            table_ax,
+            queue_ax,
+        ) = self._preparar_figura_astar(title)
+
+        if final_image_path is not None:
+            self._dibujar_estado_astar(
+                graph_ax=graph_ax,
+                table_ax=table_ax,
+                queue_ax=queue_ax,
+                graph=graph,
+                pos=pos,
+                state=states[-1],
+                source_node=source_node,
+                target_node=target_node,
+            )
+
+            final_image_path = Path(final_image_path)
+            final_image_path.parent.mkdir(
+                parents=True,
+                exist_ok=True,
+            )
+
+            fig.savefig(
+                final_image_path,
+                dpi=200,
+                bbox_inches="tight",
+            )
+
+            print(
+                f"Imagen final guardada en: "
+                f"{final_image_path}"
+            )
+
+        def init():
+            self._dibujar_estado_astar(
+                graph_ax=graph_ax,
+                table_ax=table_ax,
+                queue_ax=queue_ax,
+                graph=graph,
+                pos=pos,
+                state=states[0],
+                source_node=source_node,
+                target_node=target_node,
+            )
+            return []
+
+        def update(frame_index):
+            self._dibujar_estado_astar(
                 graph_ax=graph_ax,
                 table_ax=table_ax,
                 queue_ax=queue_ax,
