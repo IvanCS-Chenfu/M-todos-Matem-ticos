@@ -19,7 +19,8 @@ class GraphAnimator:
     - caminos mínimos con Bellman-Ford,
     - caminos mínimos con Floyd-Warshall,
     - árboles de expansión mínima con Prim y Kruskal,
-    - Union-Find y componentes conectadas.
+    - Union-Find y componentes conectadas,
+    - grafos dirigidos acíclicos y ordenamiento topológico.
 
     Más adelante se podrá ampliar con otros algoritmos.
     """
@@ -6922,6 +6923,884 @@ class GraphAnimator:
 
         def update(frame_index):
             self._dibujar_estado_union_find(
+                graph_ax=graph_ax,
+                info_ax=info_ax,
+                structure_ax=structure_ax,
+                graph=graph,
+                pos=pos,
+                state=states[frame_index],
+            )
+            return []
+
+        self.animation = FuncAnimation(
+            fig,
+            update,
+            frames=len(states),
+            init_func=init,
+            interval=self.interval,
+            repeat=repeat,
+            blit=False,
+        )
+
+        plt.show()
+
+        return self.animation
+
+    # ------------------------------------------------------------------
+    # Elementos específicos de DAG y ordenamiento topológico
+    # ------------------------------------------------------------------
+
+    def _preparar_figura_orden_topologico(self, title):
+        """
+        Mantiene la estructura visual de los algoritmos anteriores.
+
+        Distribución:
+        - izquierda: grado de entrada, nivel y estado de cada tarea;
+        - derecha superior: DAG dirigido;
+        - derecha inferior: cola de disponibles y orden construido.
+        """
+
+        fig = plt.figure(figsize=self.figsize)
+
+        grid = fig.add_gridspec(
+            2,
+            2,
+            width_ratios=[1.70, 4.30],
+            height_ratios=[4.65, 1.65],
+            wspace=0.08,
+            hspace=0.09,
+        )
+
+        info_ax = fig.add_subplot(grid[:, 0])
+        graph_ax = fig.add_subplot(grid[0, 1])
+        structure_ax = fig.add_subplot(grid[1, 1])
+
+        fig.suptitle(
+            title,
+            fontsize=15,
+            fontweight="bold",
+        )
+
+        fig.subplots_adjust(
+            left=0.025,
+            right=0.985,
+            top=0.93,
+            bottom=0.045,
+        )
+
+        return fig, graph_ax, info_ax, structure_ax
+
+    def _dibujar_leyenda_orden_topologico(self, ax):
+        """
+        Dibuja la leyenda del algoritmo de Kahn.
+        """
+
+        elementos = [
+            Line2D(
+                [0],
+                [0],
+                marker="o",
+                color="none",
+                markerfacecolor="#D9D9D9",
+                markeredgecolor="#666666",
+                markersize=8,
+                label="Tarea pendiente",
+            ),
+            Line2D(
+                [0],
+                [0],
+                marker="o",
+                color="none",
+                markerfacecolor="#F6C85F",
+                markeredgecolor="#8A6D1D",
+                markersize=8,
+                label="Disponible",
+            ),
+            Line2D(
+                [0],
+                [0],
+                marker="o",
+                color="none",
+                markerfacecolor="#E45756",
+                markeredgecolor="#7A1D1D",
+                markersize=8,
+                label="Tarea actual",
+            ),
+            Line2D(
+                [0],
+                [0],
+                marker="o",
+                color="none",
+                markerfacecolor="#4C9ED9",
+                markeredgecolor="#1F4F73",
+                markersize=8,
+                label="Procesada",
+            ),
+            Line2D(
+                [0],
+                [0],
+                marker="o",
+                color="none",
+                markerfacecolor="#D8C4E8",
+                markeredgecolor="#5A316B",
+                markersize=8,
+                label="Bloqueada por ciclo",
+            ),
+            Line2D(
+                [0],
+                [0],
+                color="#2E8B57",
+                linewidth=3,
+                label="Dependencia satisfecha",
+            ),
+            Line2D(
+                [0],
+                [0],
+                color="#E45756",
+                linewidth=4,
+                label="Dependencia actual",
+            ),
+            Line2D(
+                [0],
+                [0],
+                color="#8E5EA2",
+                linewidth=4,
+                label="Ciclo dirigido",
+            ),
+        ]
+
+        ax.legend(
+            handles=elementos,
+            loc="upper center",
+            bbox_to_anchor=(0.5, 0.925),
+            fontsize=6.6,
+            framealpha=0.97,
+            ncol=2,
+            columnspacing=0.65,
+            handlelength=1.9,
+            borderpad=0.48,
+        )
+
+    @staticmethod
+    def _abreviar_tarea_orden_topologico(task, maximum_length=18):
+        """
+        Acorta una descripción para que quepa en una tarjeta.
+        """
+
+        task = str(task)
+
+        if len(task) <= maximum_length:
+            return task
+
+        return task[: maximum_length - 1] + "…"
+
+    def _dibujar_tabla_orden_topologico(
+        self,
+        ax,
+        nodes,
+        task_names,
+        initial_in_degrees,
+        in_degrees,
+        levels,
+        available_nodes,
+        processed_nodes,
+        blocked_nodes,
+        current_node,
+        phase,
+        is_unique,
+    ):
+        """
+        Dibuja una tarjeta por tarea.
+
+        Cada tarjeta contiene:
+        - identificador y descripción abreviada;
+        - grado de entrada actual e inicial;
+        - nivel topológico provisional o final.
+        """
+
+        ax.clear()
+        ax.axis("off")
+        ax.set_xlim(0, 1)
+        ax.set_ylim(0, 1)
+
+        ax.text(
+            0.50,
+            0.985,
+            "Kahn · grados de entrada y niveles",
+            fontsize=10.7,
+            fontweight="bold",
+            ha="center",
+            va="top",
+        )
+
+        unique_text = (
+            "sí"
+            if is_unique
+            else "no"
+        )
+
+        ax.text(
+            0.50,
+            0.948,
+            f"Orden único hasta ahora: {unique_text}",
+            fontsize=8.1,
+            ha="center",
+            va="top",
+            color="#444444",
+        )
+
+        available_nodes = set(available_nodes)
+        processed_nodes = set(processed_nodes)
+        blocked_nodes = set(blocked_nodes)
+
+        number_of_columns = 2
+        card_width = 0.415
+        card_height = 0.086
+        horizontal_gap = 0.045
+        vertical_gap = 0.012
+
+        total_width = (
+            number_of_columns * card_width
+            + (number_of_columns - 1) * horizontal_gap
+        )
+
+        initial_x = (1 - total_width) / 2
+        top_y = 0.675
+
+        for index, node in enumerate(nodes):
+            row = index // number_of_columns
+            column = index % number_of_columns
+
+            x = initial_x + column * (card_width + horizontal_gap)
+            y = top_y - row * (card_height + vertical_gap)
+
+            if node in blocked_nodes:
+                face_color = "#D8C4E8"
+                edge_color = "#5A316B"
+            elif node in processed_nodes:
+                face_color = "#B7D7F0"
+                edge_color = "#1F4F73"
+            elif node in available_nodes:
+                face_color = "#FBE5A6"
+                edge_color = "#8A6D1D"
+            else:
+                face_color = "#E5E5E5"
+                edge_color = "#777777"
+
+            line_width = 1.45
+
+            if node == current_node:
+                face_color = "#F6B4B4"
+                edge_color = "#C62828"
+                line_width = 3.0
+
+            rectangle = Rectangle(
+                (x, y),
+                card_width,
+                card_height,
+                facecolor=face_color,
+                edgecolor=edge_color,
+                linewidth=line_width,
+            )
+            ax.add_patch(rectangle)
+
+            task_text = self._abreviar_tarea_orden_topologico(
+                task_names.get(node, node)
+            )
+
+            level = levels.get(node)
+            level_text = "—" if level is None else str(level)
+
+            current_in = in_degrees.get(node, 0)
+            initial_in = initial_in_degrees.get(node, 0)
+
+            ax.text(
+                x + card_width * 0.08,
+                y + card_height * 0.67,
+                str(node),
+                fontsize=8.7,
+                fontweight="bold",
+                ha="center",
+                va="center",
+            )
+
+            ax.text(
+                x + card_width * 0.19,
+                y + card_height * 0.67,
+                task_text,
+                fontsize=6.35,
+                ha="left",
+                va="center",
+            )
+
+            ax.text(
+                x + card_width * 0.19,
+                y + card_height * 0.27,
+                f"entrada={current_in}/{initial_in}",
+                fontsize=6.5,
+                ha="left",
+                va="center",
+            )
+
+            ax.text(
+                x + card_width * 0.73,
+                y + card_height * 0.27,
+                f"nivel={level_text}",
+                fontsize=6.45,
+                ha="left",
+                va="center",
+            )
+
+        if phase == "cycle":
+            footer = (
+                "Morado: tarea bloqueada por una dependencia circular"
+            )
+        else:
+            footer = (
+                "entrada actual/inicial · nivel = dependencia más profunda"
+            )
+
+        ax.text(
+            0.50,
+            0.048,
+            footer,
+            fontsize=6.25,
+            ha="center",
+            va="center",
+            color="#444444",
+        )
+
+        self._dibujar_leyenda_orden_topologico(ax)
+
+    def _dibujar_cola_y_orden_topologico(
+        self,
+        ax,
+        available_nodes,
+        order,
+        levels,
+        blocked_nodes,
+        phase,
+        multiple_choice_count,
+    ):
+        """
+        Dibuja la cola de fuentes y el orden topológico parcial.
+        """
+
+        ax.clear()
+        ax.axis("off")
+        ax.set_xlim(0, 1)
+        ax.set_ylim(0, 1)
+
+        available_nodes = list(available_nodes)
+        order = list(order)
+        blocked_nodes = list(blocked_nodes)
+
+        ax.text(
+            0.02,
+            0.90,
+            "Cola de tareas disponibles",
+            fontsize=11.2,
+            fontweight="bold",
+            ha="left",
+            va="center",
+        )
+
+        ax.text(
+            0.98,
+            0.90,
+            (
+                f"elecciones múltiples detectadas: "
+                f"{multiple_choice_count}"
+            ),
+            fontsize=7.9,
+            ha="right",
+            va="center",
+            color="#444444",
+        )
+
+        def draw_cells(
+            values,
+            y,
+            face_color,
+            edge_color,
+            first_is_current=False,
+            labels_below=None,
+        ):
+            max_cells = 14
+            visible_values = list(values[:max_cells])
+
+            if not visible_values:
+                ax.text(
+                    0.50,
+                    y + 0.085,
+                    "vacía",
+                    fontsize=9,
+                    fontweight="bold",
+                    ha="center",
+                    va="center",
+                    color="#666666",
+                )
+                return
+
+            start_x = 0.08
+            end_x = 0.92
+            total_width = end_x - start_x
+            cell_width = min(
+                0.052,
+                total_width / max(len(visible_values), 1),
+            )
+            gap = 0.008
+
+            occupied_width = (
+                len(visible_values) * cell_width
+                + max(0, len(visible_values) - 1) * gap
+            )
+            current_x = 0.50 - occupied_width / 2
+
+            for index, value in enumerate(visible_values):
+                is_current = first_is_current and index == 0
+
+                rectangle = Rectangle(
+                    (current_x, y),
+                    cell_width,
+                    0.17,
+                    facecolor="#E45756" if is_current else face_color,
+                    edgecolor="#7A1D1D" if is_current else edge_color,
+                    linewidth=2.0 if is_current else 1.4,
+                )
+                ax.add_patch(rectangle)
+
+                ax.text(
+                    current_x + cell_width / 2,
+                    y + 0.105,
+                    str(value),
+                    fontsize=8.2,
+                    fontweight="bold",
+                    ha="center",
+                    va="center",
+                )
+
+                if labels_below is not None:
+                    label = labels_below.get(value)
+                    label_text = "—" if label is None else str(label)
+
+                    ax.text(
+                        current_x + cell_width / 2,
+                        y + 0.035,
+                        f"n{label_text}",
+                        fontsize=5.9,
+                        ha="center",
+                        va="center",
+                    )
+
+                current_x += cell_width + gap
+
+        draw_cells(
+            values=available_nodes,
+            y=0.60,
+            face_color="#FBE5A6",
+            edge_color="#8A6D1D",
+            first_is_current=True,
+        )
+
+        ax.text(
+            0.02,
+            0.43,
+            "Orden topológico construido",
+            fontsize=11.2,
+            fontweight="bold",
+            ha="left",
+            va="center",
+        )
+
+        draw_cells(
+            values=order,
+            y=0.13,
+            face_color="#B7D7F0",
+            edge_color="#1F4F73",
+            first_is_current=False,
+            labels_below=levels,
+        )
+
+        if phase == "cycle" and blocked_nodes:
+            ax.text(
+                0.98,
+                0.43,
+                "Bloqueadas: " + ", ".join(map(str, blocked_nodes)),
+                fontsize=8.0,
+                fontweight="bold",
+                ha="right",
+                va="center",
+                color="#5A316B",
+            )
+        elif phase == "finished":
+            ax.text(
+                0.98,
+                0.43,
+                "Orden completo y validado",
+                fontsize=8.0,
+                fontweight="bold",
+                ha="right",
+                va="center",
+                color="#1F4F73",
+            )
+
+    def _dibujar_estado_orden_topologico(
+        self,
+        graph_ax,
+        info_ax,
+        structure_ax,
+        graph,
+        pos,
+        state,
+    ):
+        """
+        Dibuja un estado completo del algoritmo de Kahn.
+        """
+
+        graph_ax.clear()
+        graph_ax.axis("off")
+
+        limits = self._calcular_limites(
+            pos,
+            margin_x=1.15,
+            margin_y=1.05,
+        )
+
+        graph_ax.set_xlim(limits[0], limits[1])
+        graph_ax.set_ylim(limits[2], limits[3])
+        graph_ax.set_aspect("equal", adjustable="box")
+
+        task_names = dict(state.get("task_names", {}))
+        short_names = dict(state.get("short_names", {}))
+        initial_in_degrees = dict(
+            state.get("initial_in_degrees", {})
+        )
+        in_degrees = dict(state.get("in_degrees", {}))
+        levels = dict(state.get("levels", {}))
+
+        available_nodes = list(state.get("available_nodes", []))
+        processed_nodes = set(state.get("processed_nodes", set()))
+        blocked_nodes = set(state.get("blocked_nodes", set()))
+        order = list(state.get("order", []))
+        processed_edges = set(state.get("processed_edges", set()))
+        cycle_edges = set(state.get("cycle_edges", set()))
+
+        current_node = state.get("current_node")
+        active_edge = state.get("active_edge")
+        active_successor = state.get("active_successor")
+        action = state.get("action")
+        phase = state.get("phase", "processing")
+
+        for origin, destination in graph.edges():
+            edge_key = (origin, destination)
+
+            if edge_key in cycle_edges:
+                color = "#8E5EA2"
+                line_width = 4.0
+                line_style = "solid"
+                zorder = 21
+            elif edge_key == active_edge:
+                color = (
+                    "#2E8B57"
+                    if action == "unlock"
+                    else "#E45756"
+                )
+                line_width = 4.2
+                line_style = "solid"
+                zorder = 20
+            elif edge_key in processed_edges:
+                color = "#2E8B57"
+                line_width = 2.8
+                line_style = "solid"
+                zorder = 15
+            else:
+                color = "#B8B8B8"
+                line_width = 1.55
+                line_style = "solid"
+                zorder = 10
+
+            self._dibujar_flecha_bellman_ford(
+                ax=graph_ax,
+                pos=pos,
+                origin=origin,
+                destination=destination,
+                color=color,
+                line_width=line_width,
+                zorder=zorder,
+                line_style=line_style,
+            )
+
+        available_set = set(available_nodes)
+
+        for node in graph.nodes():
+            if node == current_node:
+                face_color = "#E45756"
+                edge_color = "#7A1D1D"
+                node_size = 930
+            elif node == active_successor:
+                face_color = "#F28E2B"
+                edge_color = "#8A4B08"
+                node_size = 890
+            elif node in blocked_nodes:
+                face_color = "#D8C4E8"
+                edge_color = "#5A316B"
+                node_size = 810
+            elif node in processed_nodes:
+                face_color = "#4C9ED9"
+                edge_color = "#1F4F73"
+                node_size = 790
+            elif node in available_set:
+                face_color = "#F6C85F"
+                edge_color = "#8A6D1D"
+                node_size = 800
+            else:
+                face_color = "#D9D9D9"
+                edge_color = "#666666"
+                node_size = 760
+
+            collection = nx.draw_networkx_nodes(
+                graph,
+                pos,
+                nodelist=[node],
+                node_size=node_size,
+                node_color=face_color,
+                edgecolors=edge_color,
+                linewidths=2.5 if node in {
+                    current_node,
+                    active_successor,
+                } else 1.5,
+                ax=graph_ax,
+            )
+            collection.set_zorder(25)
+
+        for node, (x, y) in pos.items():
+            graph_ax.text(
+                x,
+                y,
+                str(node),
+                fontsize=9.5,
+                fontweight="bold",
+                ha="center",
+                va="center",
+                color="black",
+                zorder=35,
+            )
+
+            graph_ax.text(
+                x,
+                y - 0.40,
+                short_names.get(node, task_names.get(node, node)),
+                fontsize=6.5,
+                ha="center",
+                va="top",
+                color="#222222",
+                zorder=37,
+            )
+
+            level = levels.get(node)
+            level_text = "—" if level is None else str(level)
+
+            graph_ax.text(
+                x,
+                y + 0.38,
+                (
+                    f"in={in_degrees.get(node, 0)}"
+                    f" | niv={level_text}"
+                ),
+                fontsize=6.8,
+                fontweight="bold",
+                ha="center",
+                va="bottom",
+                color="#222222",
+                zorder=40,
+                bbox={
+                    "boxstyle": "round,pad=0.17",
+                    "fc": "white",
+                    "ec": "#555555",
+                    "alpha": 0.97,
+                },
+            )
+
+        graph_ax.text(
+            0.50,
+            0.015,
+            state.get("message", ""),
+            transform=graph_ax.transAxes,
+            fontsize=8.9,
+            ha="center",
+            va="bottom",
+            bbox={
+                "boxstyle": "round,pad=0.38",
+                "fc": "white",
+                "ec": "#777777",
+                "alpha": 0.96,
+            },
+            zorder=50,
+        )
+
+        old_in_degree = state.get("old_in_degree")
+        new_in_degree = state.get("new_in_degree")
+
+        if active_edge is not None and old_in_degree is not None:
+            origin, destination = active_edge
+
+            operation_text = (
+                f"Eliminar conceptualmente {origin}→{destination}: "
+                f"entrada({destination}) "
+                f"{old_in_degree} → {new_in_degree}"
+            )
+
+            graph_ax.text(
+                0.50,
+                0.965,
+                operation_text,
+                transform=graph_ax.transAxes,
+                fontsize=8.0,
+                ha="center",
+                va="top",
+                bbox={
+                    "boxstyle": "round,pad=0.28",
+                    "fc": "white",
+                    "ec": "#999999",
+                    "alpha": 0.96,
+                },
+                zorder=50,
+            )
+
+        is_unique = bool(state.get("is_unique", True))
+        uniqueness_text = "único" if is_unique else "no único"
+
+        status_text = (
+            f"Procesadas: {len(processed_nodes)}/{graph.number_of_nodes()}"
+            f"  ·  disponibles: {len(available_nodes)}"
+            f"  ·  orden {uniqueness_text}"
+        )
+
+        if phase == "cycle":
+            status_text = (
+                f"CICLO  ·  procesadas: {len(processed_nodes)}"
+                f"  ·  bloqueadas: {len(blocked_nodes)}"
+            )
+
+        graph_ax.text(
+            0.99,
+            0.985,
+            status_text,
+            transform=graph_ax.transAxes,
+            fontsize=8.5,
+            ha="right",
+            va="top",
+            bbox={
+                "boxstyle": "round,pad=0.30",
+                "fc": "white",
+                "ec": "#999999",
+                "alpha": 0.96,
+            },
+            zorder=50,
+        )
+
+        self._dibujar_tabla_orden_topologico(
+            ax=info_ax,
+            nodes=sorted(graph.nodes()),
+            task_names=task_names,
+            initial_in_degrees=initial_in_degrees,
+            in_degrees=in_degrees,
+            levels=levels,
+            available_nodes=available_nodes,
+            processed_nodes=processed_nodes,
+            blocked_nodes=blocked_nodes,
+            current_node=current_node,
+            phase=phase,
+            is_unique=is_unique,
+        )
+
+        self._dibujar_cola_y_orden_topologico(
+            ax=structure_ax,
+            available_nodes=available_nodes,
+            order=order,
+            levels=levels,
+            blocked_nodes=sorted(blocked_nodes),
+            phase=phase,
+            multiple_choice_count=state.get(
+                "multiple_choice_count",
+                0,
+            ),
+        )
+
+    def animate_topological_sort(
+        self,
+        graph,
+        pos,
+        states,
+        title="DAG y ordenamiento topológico",
+        final_image_path=None,
+        repeat=False,
+    ):
+        """
+        Anima el algoritmo de Kahn.
+
+        La imagen final muestra:
+        - el orden topológico;
+        - grados de entrada reducidos a cero;
+        - niveles de dependencia;
+        - dependencias satisfechas;
+        - o, en el modo opcional, el ciclo y las tareas bloqueadas.
+        """
+
+        if not states:
+            raise ValueError(
+                "La lista de estados del ordenamiento topológico "
+                "no puede estar vacía."
+            )
+
+        (
+            fig,
+            graph_ax,
+            info_ax,
+            structure_ax,
+        ) = self._preparar_figura_orden_topologico(title)
+
+        if final_image_path is not None:
+            self._dibujar_estado_orden_topologico(
+                graph_ax=graph_ax,
+                info_ax=info_ax,
+                structure_ax=structure_ax,
+                graph=graph,
+                pos=pos,
+                state=states[-1],
+            )
+
+            final_image_path = Path(final_image_path)
+            final_image_path.parent.mkdir(
+                parents=True,
+                exist_ok=True,
+            )
+
+            fig.savefig(
+                final_image_path,
+                dpi=200,
+                bbox_inches="tight",
+            )
+
+            print(
+                f"Imagen final guardada en: "
+                f"{final_image_path}"
+            )
+
+        def init():
+            self._dibujar_estado_orden_topologico(
+                graph_ax=graph_ax,
+                info_ax=info_ax,
+                structure_ax=structure_ax,
+                graph=graph,
+                pos=pos,
+                state=states[0],
+            )
+            return []
+
+        def update(frame_index):
+            self._dibujar_estado_orden_topologico(
                 graph_ax=graph_ax,
                 info_ax=info_ax,
                 structure_ax=structure_ax,
