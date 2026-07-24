@@ -17,10 +17,10 @@ class GraphAnimator:
     - caminos mínimos con Dijkstra,
     - caminos mínimos con A*,
     - caminos mínimos con Bellman-Ford,
-    - caminos mínimos con Floyd-Warshall.
+    - caminos mínimos con Floyd-Warshall,
+    - árboles de expansión mínima con Prim y Kruskal.
 
-    Más adelante se podrá ampliar con animaciones para Prim,
-    Kruskal y otros algoritmos.
+    Más adelante se podrá ampliar con otros algoritmos.
     """
 
     def __init__(self, figsize=(15, 9), interval=850):
@@ -4699,6 +4699,1445 @@ class GraphAnimator:
                 state=states[frame_index],
                 source_node=source_node,
                 target_node=target_node,
+            )
+            return []
+
+        self.animation = FuncAnimation(
+            fig,
+            update,
+            frames=len(states),
+            init_func=init,
+            interval=self.interval,
+            repeat=repeat,
+            blit=False,
+        )
+
+        plt.show()
+
+        return self.animation
+
+    # ------------------------------------------------------------------
+    # Elementos específicos de Prim y Kruskal
+    # ------------------------------------------------------------------
+
+    def _preparar_figura_mst(self, title):
+        """
+        Reutiliza la distribución visual de Dijkstra y A*.
+
+        Distribución:
+        - izquierda: leyenda y tarjetas del algoritmo activo;
+        - derecha superior: grafo ponderado;
+        - derecha inferior: cola de Prim o lista de Kruskal.
+        """
+
+        return self._preparar_figura_dijkstra(title)
+
+    def _dibujar_leyenda_mst(self, ax, algorithm):
+        """
+        Dibuja una leyenda compacta para Prim, Kruskal y la comparación.
+        """
+
+        if algorithm == "prim":
+            elementos = [
+                Line2D(
+                    [0],
+                    [0],
+                    marker="o",
+                    color="none",
+                    markerfacecolor="#D9D9D9",
+                    markeredgecolor="#666666",
+                    markersize=8,
+                    label="Fuera del árbol",
+                ),
+                Line2D(
+                    [0],
+                    [0],
+                    marker="o",
+                    color="none",
+                    markerfacecolor="#F6C85F",
+                    markeredgecolor="#8A6D1D",
+                    markersize=8,
+                    label="En la frontera",
+                ),
+                Line2D(
+                    [0],
+                    [0],
+                    marker="o",
+                    color="none",
+                    markerfacecolor="#4C9ED9",
+                    markeredgecolor="#1F4F73",
+                    markersize=8,
+                    label="Incluido",
+                ),
+                Line2D(
+                    [0],
+                    [0],
+                    color="#2E8B57",
+                    linewidth=3,
+                    label="Arista seleccionada",
+                ),
+                Line2D(
+                    [0],
+                    [0],
+                    color="#E45756",
+                    linewidth=4,
+                    label="Arista actual",
+                ),
+                Line2D(
+                    [0],
+                    [0],
+                    color="#F28E2B",
+                    linewidth=3,
+                    linestyle="dashed",
+                    label="Entrada obsoleta",
+                ),
+            ]
+        elif algorithm == "kruskal":
+            elementos = [
+                Line2D(
+                    [0],
+                    [0],
+                    marker="o",
+                    color="none",
+                    markerfacecolor="#D9D9D9",
+                    markeredgecolor="#666666",
+                    markersize=8,
+                    label="Componente",
+                ),
+                Line2D(
+                    [0],
+                    [0],
+                    color="#2E8B57",
+                    linewidth=3,
+                    label="Arista seleccionada",
+                ),
+                Line2D(
+                    [0],
+                    [0],
+                    color="#E45756",
+                    linewidth=4,
+                    label="Arista actual",
+                ),
+                Line2D(
+                    [0],
+                    [0],
+                    color="#F28E2B",
+                    linewidth=3,
+                    linestyle="dashed",
+                    label="Rechazada por ciclo",
+                ),
+            ]
+        else:
+            elementos = [
+                Line2D(
+                    [0],
+                    [0],
+                    marker="o",
+                    color="none",
+                    markerfacecolor="#4C9ED9",
+                    markeredgecolor="#1F4F73",
+                    markersize=8,
+                    label="Vértice conectado",
+                ),
+                Line2D(
+                    [0],
+                    [0],
+                    color="#2E8B57",
+                    linewidth=4,
+                    label="Árbol de expansión mínima",
+                ),
+            ]
+
+        ax.legend(
+            handles=elementos,
+            loc="upper center",
+            bbox_to_anchor=(0.5, 0.92),
+            fontsize=7.0,
+            framealpha=0.97,
+            ncol=2,
+            columnspacing=0.8,
+            handlelength=2.1,
+            borderpad=0.55,
+        )
+
+    def _dibujar_tabla_prim(
+        self,
+        ax,
+        nodes,
+        keys,
+        parents,
+        included,
+        frontier_nodes,
+        current_node,
+        total_cost,
+    ):
+        """
+        Dibuja las tarjetas de Prim.
+
+        Cada tarjeta muestra:
+        - clave: peso de la mejor arista conocida hacia el árbol;
+        - padre: extremo incluido que proporciona esa arista.
+        """
+
+        ax.clear()
+        ax.axis("off")
+        ax.set_xlim(0, 1)
+        ax.set_ylim(0, 1)
+
+        ax.text(
+            0.50,
+            0.985,
+            "Prim · claves y padres",
+            fontsize=11.3,
+            fontweight="bold",
+            ha="center",
+            va="top",
+        )
+
+        ax.text(
+            0.50,
+            0.935,
+            f"Coste acumulado: {self._formatear_distancia(total_cost)}",
+            fontsize=8.7,
+            ha="center",
+            va="top",
+            color="#444444",
+        )
+
+        number_of_columns = 2
+        card_width = 0.405
+        card_height = 0.078
+        horizontal_gap = 0.055
+        vertical_gap = 0.016
+
+        total_width = (
+            number_of_columns * card_width
+            + (number_of_columns - 1) * horizontal_gap
+        )
+
+        initial_x = (1 - total_width) / 2
+        top_y = 0.665
+
+        for index, node in enumerate(nodes):
+            row = index // number_of_columns
+            column = index % number_of_columns
+
+            x = initial_x + column * (card_width + horizontal_gap)
+            y = top_y - row * (card_height + vertical_gap)
+
+            key = keys.get(node, float("inf"))
+            parent = parents.get(node)
+
+            if node in included:
+                face_color = "#B7D7F0"
+                edge_color = "#1F4F73"
+            elif node in frontier_nodes:
+                face_color = "#FBE5A6"
+                edge_color = "#8A6D1D"
+            else:
+                face_color = "#E5E5E5"
+                edge_color = "#777777"
+
+            line_width = 1.5
+
+            if node == current_node:
+                edge_color = "#C62828"
+                line_width = 3.0
+
+            rectangle = Rectangle(
+                (x, y),
+                card_width,
+                card_height,
+                facecolor=face_color,
+                edgecolor=edge_color,
+                linewidth=line_width,
+            )
+            ax.add_patch(rectangle)
+
+            parent_text = "—" if parent is None else str(parent)
+
+            ax.text(
+                x + card_width * 0.11,
+                y + card_height / 2,
+                str(node),
+                fontsize=9,
+                fontweight="bold",
+                ha="center",
+                va="center",
+            )
+
+            ax.text(
+                x + card_width * 0.31,
+                y + card_height / 2,
+                f"k={self._formatear_distancia(key)}",
+                fontsize=7.3,
+                ha="left",
+                va="center",
+            )
+
+            ax.text(
+                x + card_width * 0.62,
+                y + card_height / 2,
+                f"padre={parent_text}",
+                fontsize=6.9,
+                ha="left",
+                va="center",
+            )
+
+        ax.text(
+            0.50,
+            0.055,
+            (
+                "Gris: fuera   ·   Amarillo: frontera   ·   "
+                "Azul: incluido"
+            ),
+            fontsize=6.7,
+            ha="center",
+            va="center",
+            color="#444444",
+        )
+
+        self._dibujar_leyenda_mst(ax, "prim")
+
+    def _dibujar_cola_prim(
+        self,
+        ax,
+        priority_queue,
+    ):
+        """
+        Dibuja la cola visible de Prim debajo del grafo.
+
+        Las entradas tienen la forma:
+            (peso, origen, destino)
+        """
+
+        ax.clear()
+        ax.axis("off")
+        ax.set_xlim(0, 1)
+        ax.set_ylim(0, 1)
+
+        ax.text(
+            0.02,
+            0.82,
+            "Cola de prioridad de Prim",
+            fontsize=12,
+            fontweight="bold",
+            ha="left",
+            va="center",
+        )
+
+        ax.text(
+            0.02,
+            0.41,
+            "Menor peso",
+            fontsize=8.5,
+            ha="left",
+            va="center",
+        )
+
+        ax.text(
+            0.98,
+            0.41,
+            "Peso mayor",
+            fontsize=8.5,
+            ha="right",
+            va="center",
+        )
+
+        queue_sorted = sorted(priority_queue)
+
+        if not queue_sorted:
+            ax.text(
+                0.50,
+                0.41,
+                "Cola vacía",
+                fontsize=11.5,
+                fontweight="bold",
+                ha="center",
+                va="center",
+                bbox={
+                    "boxstyle": "round,pad=0.42",
+                    "fc": "white",
+                    "ec": "#777777",
+                    "alpha": 0.98,
+                },
+            )
+            return
+
+        max_cells = 10
+        visible_queue = queue_sorted[:max_cells]
+
+        initial_x = 0.11
+        final_x = 0.89
+        total_width = final_x - initial_x
+        cell_width = min(
+            0.078,
+            total_width / max(len(visible_queue), 1),
+        )
+        gap = 0.009
+
+        occupied_width = (
+            len(visible_queue) * cell_width
+            + max(0, len(visible_queue) - 1) * gap
+        )
+
+        current_x = 0.50 - occupied_width / 2
+
+        for index, (weight, origin, destination) in enumerate(visible_queue):
+            is_minimum = index == 0
+
+            rectangle = Rectangle(
+                (current_x, 0.20),
+                cell_width,
+                0.43,
+                facecolor="#E45756" if is_minimum else "#F6C85F",
+                edgecolor="#7A1D1D" if is_minimum else "#8A6D1D",
+                linewidth=2.0 if is_minimum else 1.5,
+            )
+            ax.add_patch(rectangle)
+
+            ax.text(
+                current_x + cell_width / 2,
+                0.49,
+                f"{origin}—{destination}",
+                fontsize=7.6,
+                fontweight="bold",
+                ha="center",
+                va="center",
+            )
+
+            ax.text(
+                current_x + cell_width / 2,
+                0.33,
+                f"w={self._formatear_distancia(weight)}",
+                fontsize=7.1,
+                ha="center",
+                va="center",
+            )
+
+            if is_minimum:
+                ax.text(
+                    current_x + cell_width / 2,
+                    0.12,
+                    "siguiente",
+                    fontsize=6.5,
+                    ha="center",
+                    va="top",
+                )
+
+            current_x += cell_width + gap
+
+        if len(queue_sorted) > max_cells:
+            ax.text(
+                0.91,
+                0.41,
+                f"+{len(queue_sorted) - max_cells}",
+                fontsize=9,
+                fontweight="bold",
+                ha="left",
+                va="center",
+            )
+
+    def _dibujar_tabla_kruskal(
+        self,
+        ax,
+        nodes,
+        component_map,
+        selected_edges,
+        current_edge,
+        total_cost,
+    ):
+        """
+        Dibuja una tarjeta por vértice con su componente actual.
+        """
+
+        ax.clear()
+        ax.axis("off")
+        ax.set_xlim(0, 1)
+        ax.set_ylim(0, 1)
+
+        ax.text(
+            0.50,
+            0.985,
+            "Kruskal · componentes",
+            fontsize=11.3,
+            fontweight="bold",
+            ha="center",
+            va="top",
+        )
+
+        ax.text(
+            0.50,
+            0.935,
+            (
+                f"Aristas: {len(selected_edges)}"
+                f"  ·  coste: {self._formatear_distancia(total_cost)}"
+            ),
+            fontsize=8.7,
+            ha="center",
+            va="top",
+            color="#444444",
+        )
+
+        number_of_columns = 2
+        card_width = 0.405
+        card_height = 0.078
+        horizontal_gap = 0.055
+        vertical_gap = 0.016
+
+        total_width = (
+            number_of_columns * card_width
+            + (number_of_columns - 1) * horizontal_gap
+        )
+
+        initial_x = (1 - total_width) / 2
+        top_y = 0.665
+
+        current_nodes = set(current_edge or [])
+
+        for index, node in enumerate(nodes):
+            row = index // number_of_columns
+            column = index % number_of_columns
+
+            x = initial_x + column * (card_width + horizontal_gap)
+            y = top_y - row * (card_height + vertical_gap)
+
+            component = component_map.get(node, node)
+
+            face_color = "#E5E5E5"
+            edge_color = "#777777"
+            line_width = 1.5
+
+            if node in current_nodes:
+                face_color = "#FBE5A6"
+                edge_color = "#C62828"
+                line_width = 3.0
+
+            rectangle = Rectangle(
+                (x, y),
+                card_width,
+                card_height,
+                facecolor=face_color,
+                edgecolor=edge_color,
+                linewidth=line_width,
+            )
+            ax.add_patch(rectangle)
+
+            ax.text(
+                x + card_width * 0.15,
+                y + card_height / 2,
+                str(node),
+                fontsize=9,
+                fontweight="bold",
+                ha="center",
+                va="center",
+            )
+
+            ax.text(
+                x + card_width * 0.43,
+                y + card_height / 2,
+                f"comp. {component}",
+                fontsize=7.2,
+                ha="left",
+                va="center",
+            )
+
+        ax.text(
+            0.50,
+            0.055,
+            "Dos extremos en la misma componente formarían un ciclo",
+            fontsize=6.7,
+            ha="center",
+            va="center",
+            color="#444444",
+        )
+
+        self._dibujar_leyenda_mst(ax, "kruskal")
+
+    def _dibujar_lista_kruskal(
+        self,
+        ax,
+        sorted_edges,
+        processed_count,
+        active_edge_index,
+        action,
+    ):
+        """
+        Dibuja la lista ordenada de aristas de Kruskal.
+        """
+
+        ax.clear()
+        ax.axis("off")
+        ax.set_xlim(0, 1)
+        ax.set_ylim(0, 1)
+
+        ax.text(
+            0.02,
+            0.87,
+            "Aristas ordenadas de Kruskal",
+            fontsize=11.8,
+            fontweight="bold",
+            ha="left",
+            va="center",
+        )
+
+        number_of_columns = 10
+        number_of_rows = (
+            len(sorted_edges) + number_of_columns - 1
+        ) // number_of_columns
+
+        cell_width = 0.075
+        cell_height = 0.25
+        horizontal_gap = 0.009
+        vertical_gap = 0.075
+
+        total_width = (
+            number_of_columns * cell_width
+            + (number_of_columns - 1) * horizontal_gap
+        )
+
+        initial_x = (1 - total_width) / 2
+        top_y = 0.49
+
+        for index, (weight, origin, destination) in enumerate(sorted_edges):
+            row = index // number_of_columns
+            column = index % number_of_columns
+
+            x = initial_x + column * (cell_width + horizontal_gap)
+            y = top_y - row * (cell_height + vertical_gap)
+
+            is_current = index == active_edge_index
+            is_processed = index < processed_count
+
+            if is_current:
+                if action == "accepted":
+                    face_color = "#B7E4C7"
+                    edge_color = "#2E8B57"
+                else:
+                    face_color = "#F6B4B4"
+                    edge_color = "#C62828"
+                line_width = 2.2
+            elif is_processed:
+                face_color = "#B7D7F0"
+                edge_color = "#1F4F73"
+                line_width = 1.4
+            else:
+                face_color = "#FBE5A6"
+                edge_color = "#8A6D1D"
+                line_width = 1.4
+
+            rectangle = Rectangle(
+                (x, y),
+                cell_width,
+                cell_height,
+                facecolor=face_color,
+                edgecolor=edge_color,
+                linewidth=line_width,
+            )
+            ax.add_patch(rectangle)
+
+            ax.text(
+                x + cell_width / 2,
+                y + cell_height * 0.66,
+                f"{origin}—{destination}",
+                fontsize=6.8,
+                fontweight="bold",
+                ha="center",
+                va="center",
+            )
+
+            ax.text(
+                x + cell_width / 2,
+                y + cell_height * 0.28,
+                f"w={self._formatear_distancia(weight)}",
+                fontsize=6.5,
+                ha="center",
+                va="center",
+            )
+
+        if number_of_rows == 1:
+            ax.set_ylim(0.10, 1.0)
+
+    def _dibujar_grafo_mst_comun(
+        self,
+        graph_ax,
+        graph,
+        pos,
+        selected_edges,
+        rejected_edges,
+        active_edge,
+        action,
+        node_colors,
+        node_edge_colors,
+        node_sizes,
+        labels_above=None,
+    ):
+        """
+        Dibuja el grafo ponderado común a Prim y Kruskal.
+        """
+
+        graph_ax.clear()
+        graph_ax.axis("off")
+
+        limits = self._calcular_limites(
+            pos,
+            margin_x=1.2,
+            margin_y=1.0,
+        )
+
+        graph_ax.set_xlim(limits[0], limits[1])
+        graph_ax.set_ylim(limits[2], limits[3])
+        graph_ax.set_aspect("equal", adjustable="box")
+
+        selected_normalized = {
+            self._normalizar_arista(u, v)
+            for u, v in selected_edges
+        }
+        rejected_normalized = {
+            self._normalizar_arista(u, v)
+            for u, v in rejected_edges
+        }
+
+        active_normalized = None
+        if active_edge is not None:
+            active_normalized = self._normalizar_arista(*active_edge)
+
+        for u, v, data in graph.edges(data=True):
+            x1, y1 = pos[u]
+            x2, y2 = pos[v]
+            edge_key = self._normalizar_arista(u, v)
+
+            if edge_key == active_normalized:
+                if action in {"rejected", "stale", "no_improvement"}:
+                    color = "#F28E2B"
+                    line_style = "dashed"
+                else:
+                    color = "#E45756"
+                    line_style = "solid"
+                line_width = 4.2
+                zorder = 20
+            elif edge_key in selected_normalized:
+                color = "#2E8B57"
+                line_style = "solid"
+                line_width = 3.4
+                zorder = 17
+            elif edge_key in rejected_normalized:
+                color = "#C8A27A"
+                line_style = "dashed"
+                line_width = 1.8
+                zorder = 12
+            else:
+                color = "#B8B8B8"
+                line_style = "solid"
+                line_width = 1.6
+                zorder = 10
+
+            graph_ax.plot(
+                [x1, x2],
+                [y1, y2],
+                color=color,
+                linewidth=line_width,
+                linestyle=line_style,
+                zorder=zorder,
+            )
+
+            self._dibujar_peso_arista(
+                ax=graph_ax,
+                pos=pos,
+                origen=u,
+                destino=v,
+                peso=data.get("weight", 1),
+            )
+
+        for node in graph.nodes():
+            collection = nx.draw_networkx_nodes(
+                graph,
+                pos,
+                nodelist=[node],
+                node_size=node_sizes.get(node, 780),
+                node_color=node_colors.get(node, "#D9D9D9"),
+                edgecolors=node_edge_colors.get(node, "#666666"),
+                linewidths=2.2 if node_sizes.get(node, 780) > 850 else 1.5,
+                ax=graph_ax,
+            )
+            collection.set_zorder(25)
+
+        for node, (x, y) in pos.items():
+            graph_ax.text(
+                x,
+                y,
+                str(node),
+                fontsize=10,
+                fontweight="bold",
+                ha="center",
+                va="center",
+                color="black",
+                zorder=35,
+            )
+
+            if labels_above and node in labels_above:
+                graph_ax.text(
+                    x,
+                    y + 0.39,
+                    labels_above[node],
+                    fontsize=7.1,
+                    fontweight="bold",
+                    ha="center",
+                    va="bottom",
+                    color="#222222",
+                    zorder=40,
+                    bbox={
+                        "boxstyle": "round,pad=0.18",
+                        "fc": "white",
+                        "ec": "#555555",
+                        "alpha": 0.97,
+                    },
+                )
+
+    def _dibujar_estado_prim(
+        self,
+        graph_ax,
+        info_ax,
+        structure_ax,
+        graph,
+        pos,
+        state,
+        start_node,
+    ):
+        """
+        Dibuja un estado completo de Prim.
+        """
+
+        included = set(state.get("included", set()))
+        selected_edges = list(state.get("selected_edges", []))
+        rejected_edges = list(state.get("rejected_edges", []))
+        keys = dict(state.get("keys", {}))
+        parents = dict(state.get("parents", {}))
+        priority_queue = list(state.get("priority_queue", []))
+        active_edge = state.get("active_edge")
+        action = state.get("action")
+        current_node = state.get("current_node")
+
+        frontier_nodes = {
+            destination
+            for _, _, destination in priority_queue
+        }
+
+        node_colors = {}
+        node_edge_colors = {}
+        node_sizes = {}
+
+        for node in graph.nodes():
+            if node == current_node:
+                node_colors[node] = "#E45756"
+                node_edge_colors[node] = "#7A1D1D"
+                node_sizes[node] = 930
+            elif node in included:
+                node_colors[node] = "#4C9ED9"
+                node_edge_colors[node] = "#1F4F73"
+                node_sizes[node] = 790
+            elif node in frontier_nodes:
+                node_colors[node] = "#F6C85F"
+                node_edge_colors[node] = "#8A6D1D"
+                node_sizes[node] = 790
+            else:
+                node_colors[node] = "#D9D9D9"
+                node_edge_colors[node] = "#666666"
+                node_sizes[node] = 760
+
+        labels_above = {
+            node: f"k={self._formatear_distancia(keys.get(node, float('inf')))}"
+            for node in graph.nodes()
+        }
+
+        self._dibujar_grafo_mst_comun(
+            graph_ax=graph_ax,
+            graph=graph,
+            pos=pos,
+            selected_edges=selected_edges,
+            rejected_edges=rejected_edges,
+            active_edge=active_edge,
+            action=action,
+            node_colors=node_colors,
+            node_edge_colors=node_edge_colors,
+            node_sizes=node_sizes,
+            labels_above=labels_above,
+        )
+
+        start_x, start_y = pos[start_node]
+        graph_ax.text(
+            start_x,
+            start_y - 0.43,
+            "inicio de Prim",
+            fontsize=8,
+            fontweight="bold",
+            ha="center",
+            va="top",
+            color="#7A1D1D",
+            zorder=40,
+        )
+
+        graph_ax.text(
+            0.50,
+            0.015,
+            state.get("message", ""),
+            transform=graph_ax.transAxes,
+            fontsize=9.2,
+            ha="center",
+            va="bottom",
+            bbox={
+                "boxstyle": "round,pad=0.38",
+                "fc": "white",
+                "ec": "#777777",
+                "alpha": 0.96,
+            },
+            zorder=50,
+        )
+
+        graph_ax.text(
+            0.99,
+            0.985,
+            (
+                f"PRIM  ·  incluidos: {len(included)}/{graph.number_of_nodes()}"
+                f"  ·  aristas: {len(selected_edges)}"
+                f"  ·  coste: {self._formatear_distancia(state.get('total_cost', 0))}"
+            ),
+            transform=graph_ax.transAxes,
+            fontsize=8.6,
+            ha="right",
+            va="top",
+            bbox={
+                "boxstyle": "round,pad=0.30",
+                "fc": "white",
+                "ec": "#999999",
+                "alpha": 0.96,
+            },
+            zorder=50,
+        )
+
+        self._dibujar_tabla_prim(
+            ax=info_ax,
+            nodes=sorted(graph.nodes()),
+            keys=keys,
+            parents=parents,
+            included=included,
+            frontier_nodes=frontier_nodes,
+            current_node=current_node,
+            total_cost=state.get("total_cost", 0),
+        )
+
+        self._dibujar_cola_prim(
+            ax=structure_ax,
+            priority_queue=priority_queue,
+        )
+
+    def _dibujar_estado_kruskal(
+        self,
+        graph_ax,
+        info_ax,
+        structure_ax,
+        graph,
+        pos,
+        state,
+    ):
+        """
+        Dibuja un estado completo de Kruskal.
+        """
+
+        selected_edges = list(state.get("selected_edges", []))
+        rejected_edges = list(state.get("rejected_edges", []))
+        component_map = dict(state.get("component_map", {}))
+        sorted_edges = list(state.get("sorted_edges", []))
+        active_edge = state.get("active_edge")
+        action = state.get("action")
+
+        # Paleta estable basada en la etiqueta canónica de la componente.
+        palette = [
+            "#B7D7F0",
+            "#FBE5A6",
+            "#D8C4E8",
+            "#B7E4C7",
+            "#F7C6C7",
+            "#CDE7E8",
+            "#E7D6B8",
+            "#D6E4B7",
+            "#D8D8F0",
+            "#F4D2A7",
+        ]
+
+        canonical_components = sorted(set(component_map.values()))
+        component_color = {
+            component: palette[index % len(palette)]
+            for index, component in enumerate(canonical_components)
+        }
+
+        node_colors = {}
+        node_edge_colors = {}
+        node_sizes = {}
+
+        active_nodes = set(active_edge or [])
+
+        for node in graph.nodes():
+            component = component_map.get(node, node)
+            node_colors[node] = component_color.get(
+                component,
+                "#D9D9D9",
+            )
+            node_edge_colors[node] = (
+                "#C62828"
+                if node in active_nodes
+                else "#666666"
+            )
+            node_sizes[node] = 900 if node in active_nodes else 780
+
+        labels_above = {
+            node: f"comp. {component_map.get(node, node)}"
+            for node in graph.nodes()
+        }
+
+        self._dibujar_grafo_mst_comun(
+            graph_ax=graph_ax,
+            graph=graph,
+            pos=pos,
+            selected_edges=selected_edges,
+            rejected_edges=rejected_edges,
+            active_edge=active_edge,
+            action=action,
+            node_colors=node_colors,
+            node_edge_colors=node_edge_colors,
+            node_sizes=node_sizes,
+            labels_above=labels_above,
+        )
+
+        graph_ax.text(
+            0.50,
+            0.015,
+            state.get("message", ""),
+            transform=graph_ax.transAxes,
+            fontsize=9.2,
+            ha="center",
+            va="bottom",
+            bbox={
+                "boxstyle": "round,pad=0.38",
+                "fc": "white",
+                "ec": "#777777",
+                "alpha": 0.96,
+            },
+            zorder=50,
+        )
+
+        graph_ax.text(
+            0.99,
+            0.985,
+            (
+                f"KRUSKAL  ·  componentes: "
+                f"{len(set(component_map.values()))}"
+                f"  ·  aristas: {len(selected_edges)}"
+                f"  ·  coste: {self._formatear_distancia(state.get('total_cost', 0))}"
+            ),
+            transform=graph_ax.transAxes,
+            fontsize=8.6,
+            ha="right",
+            va="top",
+            bbox={
+                "boxstyle": "round,pad=0.30",
+                "fc": "white",
+                "ec": "#999999",
+                "alpha": 0.96,
+            },
+            zorder=50,
+        )
+
+        self._dibujar_tabla_kruskal(
+            ax=info_ax,
+            nodes=sorted(graph.nodes()),
+            component_map=component_map,
+            selected_edges=selected_edges,
+            current_edge=active_edge,
+            total_cost=state.get("total_cost", 0),
+        )
+
+        self._dibujar_lista_kruskal(
+            ax=structure_ax,
+            sorted_edges=sorted_edges,
+            processed_count=state.get("processed_count", 0),
+            active_edge_index=state.get("active_edge_index"),
+            action=action,
+        )
+
+    def _dibujar_estado_comparacion_mst(
+        self,
+        graph_ax,
+        info_ax,
+        structure_ax,
+        graph,
+        pos,
+        state,
+    ):
+        """
+        Dibuja el resumen final de Prim y Kruskal.
+        """
+
+        prim_edges = list(state.get("prim_edges", []))
+        kruskal_edges = list(state.get("kruskal_edges", []))
+        common_edges = list(state.get("common_edges", []))
+
+        node_colors = {
+            node: "#4C9ED9"
+            for node in graph.nodes()
+        }
+        node_edge_colors = {
+            node: "#1F4F73"
+            for node in graph.nodes()
+        }
+        node_sizes = {
+            node: 790
+            for node in graph.nodes()
+        }
+
+        self._dibujar_grafo_mst_comun(
+            graph_ax=graph_ax,
+            graph=graph,
+            pos=pos,
+            selected_edges=common_edges,
+            rejected_edges=[],
+            active_edge=None,
+            action="finished",
+            node_colors=node_colors,
+            node_edge_colors=node_edge_colors,
+            node_sizes=node_sizes,
+            labels_above=None,
+        )
+
+        graph_ax.text(
+            0.50,
+            0.015,
+            state.get("message", ""),
+            transform=graph_ax.transAxes,
+            fontsize=9.3,
+            ha="center",
+            va="bottom",
+            bbox={
+                "boxstyle": "round,pad=0.38",
+                "fc": "white",
+                "ec": "#777777",
+                "alpha": 0.96,
+            },
+            zorder=50,
+        )
+
+        graph_ax.text(
+            0.99,
+            0.985,
+            "COMPARACIÓN FINAL",
+            transform=graph_ax.transAxes,
+            fontsize=9,
+            fontweight="bold",
+            ha="right",
+            va="top",
+            bbox={
+                "boxstyle": "round,pad=0.30",
+                "fc": "white",
+                "ec": "#999999",
+                "alpha": 0.96,
+            },
+            zorder=50,
+        )
+
+        info_ax.clear()
+        info_ax.axis("off")
+        info_ax.set_xlim(0, 1)
+        info_ax.set_ylim(0, 1)
+
+        info_ax.text(
+            0.50,
+            0.985,
+            "Comparación final",
+            fontsize=12,
+            fontweight="bold",
+            ha="center",
+            va="top",
+        )
+
+        cards = [
+            (
+                "Prim",
+                len(prim_edges),
+                state.get("prim_cost", 0),
+                "#B7D7F0",
+            ),
+            (
+                "Kruskal",
+                len(kruskal_edges),
+                state.get("kruskal_cost", 0),
+                "#B7E4C7",
+            ),
+        ]
+
+        y_positions = [0.70, 0.53]
+
+        for (name, edge_count, cost, color), y in zip(cards, y_positions):
+            rectangle = Rectangle(
+                (0.12, y),
+                0.76,
+                0.12,
+                facecolor=color,
+                edgecolor="#555555",
+                linewidth=1.5,
+            )
+            info_ax.add_patch(rectangle)
+
+            info_ax.text(
+                0.20,
+                y + 0.06,
+                name,
+                fontsize=10,
+                fontweight="bold",
+                ha="left",
+                va="center",
+            )
+
+            info_ax.text(
+                0.52,
+                y + 0.06,
+                f"{edge_count} aristas",
+                fontsize=8,
+                ha="center",
+                va="center",
+            )
+
+            info_ax.text(
+                0.80,
+                y + 0.06,
+                f"coste {self._formatear_distancia(cost)}",
+                fontsize=8,
+                ha="right",
+                va="center",
+            )
+
+        same_cost = state.get("same_cost", False)
+        same_edges = state.get("same_edges", False)
+
+        info_ax.text(
+            0.50,
+            0.39,
+            (
+                f"Mismo coste: {'sí' if same_cost else 'no'}\n"
+                f"Mismas aristas: {'sí' if same_edges else 'no'}\n"
+                f"Vértices: {graph.number_of_nodes()}\n"
+                f"Aristas del MST: {len(common_edges)}"
+            ),
+            fontsize=9,
+            ha="center",
+            va="center",
+            linespacing=1.5,
+            bbox={
+                "boxstyle": "round,pad=0.45",
+                "fc": "white",
+                "ec": "#777777",
+                "alpha": 0.98,
+            },
+        )
+
+        self._dibujar_leyenda_mst(info_ax, "comparison")
+
+        structure_ax.clear()
+        structure_ax.axis("off")
+        structure_ax.set_xlim(0, 1)
+        structure_ax.set_ylim(0, 1)
+
+        structure_ax.text(
+            0.02,
+            0.82,
+            "Aristas del árbol de expansión mínima",
+            fontsize=11.8,
+            fontweight="bold",
+            ha="left",
+            va="center",
+        )
+
+        weighted_edges = list(state.get("weighted_common_edges", []))
+        max_cells = 10
+        visible_edges = weighted_edges[:max_cells]
+
+        if visible_edges:
+            initial_x = 0.10
+            final_x = 0.90
+            total_width = final_x - initial_x
+            cell_width = min(
+                0.078,
+                total_width / max(len(visible_edges), 1),
+            )
+            gap = 0.009
+
+            occupied_width = (
+                len(visible_edges) * cell_width
+                + max(0, len(visible_edges) - 1) * gap
+            )
+            current_x = 0.50 - occupied_width / 2
+
+            for weight, origin, destination in visible_edges:
+                rectangle = Rectangle(
+                    (current_x, 0.22),
+                    cell_width,
+                    0.40,
+                    facecolor="#B7E4C7",
+                    edgecolor="#2E8B57",
+                    linewidth=1.7,
+                )
+                structure_ax.add_patch(rectangle)
+
+                structure_ax.text(
+                    current_x + cell_width / 2,
+                    0.47,
+                    f"{origin}—{destination}",
+                    fontsize=7.2,
+                    fontweight="bold",
+                    ha="center",
+                    va="center",
+                )
+
+                structure_ax.text(
+                    current_x + cell_width / 2,
+                    0.31,
+                    f"w={self._formatear_distancia(weight)}",
+                    fontsize=6.8,
+                    ha="center",
+                    va="center",
+                )
+
+                current_x += cell_width + gap
+
+    def _dibujar_estado_mst(
+        self,
+        graph_ax,
+        info_ax,
+        structure_ax,
+        graph,
+        pos,
+        state,
+        start_node,
+    ):
+        """
+        Despacha el estado al dibujo de Prim, Kruskal o comparación.
+        """
+
+        algorithm = state.get("algorithm")
+
+        if algorithm == "prim":
+            self._dibujar_estado_prim(
+                graph_ax=graph_ax,
+                info_ax=info_ax,
+                structure_ax=structure_ax,
+                graph=graph,
+                pos=pos,
+                state=state,
+                start_node=start_node,
+            )
+        elif algorithm == "kruskal":
+            self._dibujar_estado_kruskal(
+                graph_ax=graph_ax,
+                info_ax=info_ax,
+                structure_ax=structure_ax,
+                graph=graph,
+                pos=pos,
+                state=state,
+            )
+        elif algorithm == "comparison":
+            self._dibujar_estado_comparacion_mst(
+                graph_ax=graph_ax,
+                info_ax=info_ax,
+                structure_ax=structure_ax,
+                graph=graph,
+                pos=pos,
+                state=state,
+            )
+        else:
+            raise ValueError(
+                f"Algoritmo MST desconocido: {algorithm!r}"
+            )
+
+    def animate_mst_comparison(
+        self,
+        graph,
+        pos,
+        states,
+        start_node,
+        title="Árbol de expansión mínima: Prim y Kruskal",
+        final_image_path=None,
+        repeat=False,
+    ):
+        """
+        Anima primero Prim, después Kruskal y termina con una comparación.
+
+        La imagen final muestra:
+        - el árbol de expansión mínima;
+        - el coste obtenido por ambos algoritmos;
+        - el número de aristas;
+        - si coinciden el coste y la estructura.
+        """
+
+        if not states:
+            raise ValueError(
+                "La lista de estados de Prim/Kruskal no puede estar vacía."
+            )
+
+        (
+            fig,
+            graph_ax,
+            info_ax,
+            structure_ax,
+        ) = self._preparar_figura_mst(title)
+
+        if final_image_path is not None:
+            self._dibujar_estado_mst(
+                graph_ax=graph_ax,
+                info_ax=info_ax,
+                structure_ax=structure_ax,
+                graph=graph,
+                pos=pos,
+                state=states[-1],
+                start_node=start_node,
+            )
+
+            final_image_path = Path(final_image_path)
+            final_image_path.parent.mkdir(
+                parents=True,
+                exist_ok=True,
+            )
+
+            fig.savefig(
+                final_image_path,
+                dpi=200,
+                bbox_inches="tight",
+            )
+
+            print(
+                f"Imagen final guardada en: "
+                f"{final_image_path}"
+            )
+
+        def init():
+            self._dibujar_estado_mst(
+                graph_ax=graph_ax,
+                info_ax=info_ax,
+                structure_ax=structure_ax,
+                graph=graph,
+                pos=pos,
+                state=states[0],
+                start_node=start_node,
+            )
+            return []
+
+        def update(frame_index):
+            self._dibujar_estado_mst(
+                graph_ax=graph_ax,
+                info_ax=info_ax,
+                structure_ax=structure_ax,
+                graph=graph,
+                pos=pos,
+                state=states[frame_index],
+                start_node=start_node,
             )
             return []
 
