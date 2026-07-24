@@ -20,7 +20,8 @@ class GraphAnimator:
     - caminos mínimos con Floyd-Warshall,
     - árboles de expansión mínima con Prim y Kruskal,
     - Union-Find y componentes conectadas,
-    - grafos dirigidos acíclicos y ordenamiento topológico.
+    - grafos dirigidos acíclicos y ordenamiento topológico,
+    - flujo máximo y cortes mínimos con Edmonds-Karp.
 
     Más adelante se podrá ampliar con otros algoritmos.
     """
@@ -7807,6 +7808,1221 @@ class GraphAnimator:
                 graph=graph,
                 pos=pos,
                 state=states[frame_index],
+            )
+            return []
+
+        self.animation = FuncAnimation(
+            fig,
+            update,
+            frames=len(states),
+            init_func=init,
+            interval=self.interval,
+            repeat=repeat,
+            blit=False,
+        )
+
+        plt.show()
+
+        return self.animation
+    # ------------------------------------------------------------------
+    # Elementos específicos de flujo máximo y corte mínimo
+    # ------------------------------------------------------------------
+
+    def _preparar_figura_flujo_maximo(self, title):
+        """
+        Crea una distribución comparable a Dijkstra y Edmonds-Karp.
+
+        Distribución:
+        - izquierda: flujo, capacidad y residuales de cada arista;
+        - derecha superior: red dirigida;
+        - derecha inferior: cola BFS, camino aumentante o corte mínimo.
+        """
+
+        fig = plt.figure(figsize=self.figsize)
+
+        grid = fig.add_gridspec(
+            2,
+            2,
+            width_ratios=[1.90, 4.10],
+            height_ratios=[4.55, 1.85],
+            wspace=0.08,
+            hspace=0.09,
+        )
+
+        info_ax = fig.add_subplot(grid[:, 0])
+        graph_ax = fig.add_subplot(grid[0, 1])
+        structure_ax = fig.add_subplot(grid[1, 1])
+
+        fig.suptitle(
+            title,
+            fontsize=15,
+            fontweight="bold",
+        )
+
+        fig.subplots_adjust(
+            left=0.025,
+            right=0.985,
+            top=0.93,
+            bottom=0.045,
+        )
+
+        return fig, graph_ax, info_ax, structure_ax
+
+    def _dibujar_leyenda_flujo_maximo(self, ax):
+        """
+        Dibuja la leyenda de Edmonds-Karp.
+        """
+
+        elementos = [
+            Line2D(
+                [0],
+                [0],
+                marker="o",
+                color="none",
+                markerfacecolor="#D9D9D9",
+                markeredgecolor="#666666",
+                markersize=8,
+                label="No visitado por BFS",
+            ),
+            Line2D(
+                [0],
+                [0],
+                marker="o",
+                color="none",
+                markerfacecolor="#F6C85F",
+                markeredgecolor="#8A6D1D",
+                markersize=8,
+                label="Visitado por BFS",
+            ),
+            Line2D(
+                [0],
+                [0],
+                marker="o",
+                color="none",
+                markerfacecolor="#E45756",
+                markeredgecolor="#7A1D1D",
+                markersize=8,
+                label="Vértice actual",
+            ),
+            Line2D(
+                [0],
+                [0],
+                color="#2E8B57",
+                linewidth=3,
+                label="Camino aumentante",
+            ),
+            Line2D(
+                [0],
+                [0],
+                color="#8E5EA2",
+                linewidth=3,
+                linestyle="dashed",
+                label="Residual inversa",
+            ),
+            Line2D(
+                [0],
+                [0],
+                color="#C62828",
+                linewidth=4,
+                label="Arista del corte mínimo",
+            ),
+        ]
+
+        ax.legend(
+            handles=elementos,
+            loc="upper center",
+            bbox_to_anchor=(0.5, 0.925),
+            fontsize=6.7,
+            framealpha=0.97,
+            ncol=2,
+            columnspacing=0.65,
+            handlelength=2.0,
+            borderpad=0.50,
+        )
+
+    @staticmethod
+    def _clave_arista_flujo(origen, destino):
+        """
+        Devuelve una clave dirigida para una arista original.
+        """
+
+        return origen, destino
+
+    def _dibujar_tabla_aristas_flujo(
+        self,
+        ax,
+        graph,
+        flows,
+        active_residual_edge,
+        augmenting_path,
+        cut_edges,
+        phase,
+        flow_value,
+        cut_capacity,
+    ):
+        """
+        Dibuja tarjetas con flujo, capacidad y residuales.
+
+        Cada tarjeta contiene:
+        - ``f/c``: flujo actual y capacidad original;
+        - ``r+``: residual directa;
+        - ``r-``: residual inversa.
+        """
+
+        ax.clear()
+        ax.axis("off")
+        ax.set_xlim(0, 1)
+        ax.set_ylim(0, 1)
+
+        ax.text(
+            0.50,
+            0.985,
+            "Edmonds-Karp · flujo y red residual",
+            fontsize=10.7,
+            fontweight="bold",
+            ha="center",
+            va="top",
+        )
+
+        if phase in {"min_cut", "finished"}:
+            subtitle = (
+                f"Flujo máximo: {flow_value} · "
+                f"corte mínimo: {cut_capacity}"
+            )
+        else:
+            subtitle = f"Valor actual del flujo: {flow_value}"
+
+        ax.text(
+            0.50,
+            0.948,
+            subtitle,
+            fontsize=8.1,
+            ha="center",
+            va="top",
+            color="#444444",
+        )
+
+        active_original = None
+        active_direction = None
+
+        if active_residual_edge is not None:
+            active_original = tuple(
+                active_residual_edge.get("original_edge", ())
+            )
+            active_direction = active_residual_edge.get("direction")
+
+        direct_path_edges = {
+            tuple(arco["original_edge"])
+            for arco in augmenting_path
+            if arco.get("direction") == "directo"
+        }
+        reverse_path_edges = {
+            tuple(arco["original_edge"])
+            for arco in augmenting_path
+            if arco.get("direction") == "inverso"
+        }
+        cut_edge_keys = {
+            (origen, destino)
+            for origen, destino, _ in cut_edges
+        }
+
+        edge_order = list(
+            graph.graph.get(
+                "edge_order",
+                [
+                    (
+                        origen,
+                        destino,
+                        datos.get("capacity", 0),
+                    )
+                    for origen, destino, datos
+                    in graph.edges(data=True)
+                ],
+            )
+        )
+
+        number_of_columns = 2
+        card_width = 0.420
+        card_height = 0.091
+        horizontal_gap = 0.045
+        vertical_gap = 0.014
+
+        total_width = (
+            number_of_columns * card_width
+            + (number_of_columns - 1) * horizontal_gap
+        )
+
+        initial_x = (1 - total_width) / 2
+        top_y = 0.660
+
+        for index, (origin, destination, capacity) in enumerate(edge_order):
+            row = index // number_of_columns
+            column = index % number_of_columns
+
+            x = initial_x + column * (card_width + horizontal_gap)
+            y = top_y - row * (card_height + vertical_gap)
+
+            edge_key = (origin, destination)
+            flow = flows.get(edge_key, 0)
+            direct_residual = capacity - flow
+            reverse_residual = flow
+
+            if edge_key in cut_edge_keys:
+                face_color = "#F6B4B4"
+                edge_color = "#C62828"
+                line_width = 2.4
+            elif edge_key == active_original:
+                if active_direction == "inverso":
+                    face_color = "#E8D7F1"
+                    edge_color = "#8E5EA2"
+                else:
+                    face_color = "#F6B4B4"
+                    edge_color = "#C62828"
+                line_width = 2.5
+            elif edge_key in reverse_path_edges:
+                face_color = "#E8D7F1"
+                edge_color = "#8E5EA2"
+                line_width = 1.9
+            elif edge_key in direct_path_edges:
+                face_color = "#B7E4C7"
+                edge_color = "#2E8B57"
+                line_width = 1.9
+            elif flow == capacity:
+                face_color = "#B7D7F0"
+                edge_color = "#1F4F73"
+                line_width = 1.5
+            elif flow > 0:
+                face_color = "#D5E8D4"
+                edge_color = "#497A4A"
+                line_width = 1.5
+            else:
+                face_color = "#E5E5E5"
+                edge_color = "#777777"
+                line_width = 1.4
+
+            rectangle = Rectangle(
+                (x, y),
+                card_width,
+                card_height,
+                facecolor=face_color,
+                edgecolor=edge_color,
+                linewidth=line_width,
+            )
+            ax.add_patch(rectangle)
+
+            ax.text(
+                x + card_width * 0.08,
+                y + card_height * 0.67,
+                f"{origin}→{destination}",
+                fontsize=7.4,
+                fontweight="bold",
+                ha="left",
+                va="center",
+            )
+
+            ax.text(
+                x + card_width * 0.58,
+                y + card_height * 0.67,
+                f"f/c={flow}/{capacity}",
+                fontsize=7.0,
+                ha="left",
+                va="center",
+            )
+
+            ax.text(
+                x + card_width * 0.08,
+                y + card_height * 0.27,
+                f"r+={direct_residual}",
+                fontsize=6.7,
+                ha="left",
+                va="center",
+            )
+
+            ax.text(
+                x + card_width * 0.58,
+                y + card_height * 0.27,
+                f"r-={reverse_residual}",
+                fontsize=6.7,
+                ha="left",
+                va="center",
+            )
+
+        ax.text(
+            0.50,
+            0.050,
+            (
+                "r+: aumentar flujo · r-: cancelar flujo previo · "
+                "azul: saturada"
+            ),
+            fontsize=6.1,
+            ha="center",
+            va="center",
+            color="#444444",
+        )
+
+        self._dibujar_leyenda_flujo_maximo(ax)
+
+    def _dibujar_flecha_flujo(
+        self,
+        ax,
+        pos,
+        origin,
+        destination,
+        color,
+        line_width,
+        zorder,
+        line_style="solid",
+        curvature=0.0,
+    ):
+        """
+        Dibuja una arista dirigida de la red o de la residual.
+        """
+
+        x1, y1 = pos[origin]
+        x2, y2 = pos[destination]
+
+        arrow = FancyArrowPatch(
+            (x1, y1),
+            (x2, y2),
+            arrowstyle="-|>",
+            mutation_scale=15,
+            linewidth=line_width,
+            linestyle=line_style,
+            color=color,
+            shrinkA=18,
+            shrinkB=18,
+            connectionstyle=f"arc3,rad={curvature}",
+            zorder=zorder,
+        )
+        ax.add_patch(arrow)
+
+    def _dibujar_etiqueta_flujo_arista(
+        self,
+        ax,
+        pos,
+        origin,
+        destination,
+        flow,
+        capacity,
+    ):
+        """
+        Dibuja la etiqueta ``flujo/capacidad`` de una arista original.
+        """
+
+        x1, y1 = pos[origin]
+        x2, y2 = pos[destination]
+
+        middle_x = (x1 + x2) / 2
+        middle_y = (y1 + y2) / 2
+
+        dx = x2 - x1
+        dy = y2 - y1
+        length = (dx**2 + dy**2) ** 0.5
+
+        if length == 0:
+            offset_x = 0
+            offset_y = 0
+        else:
+            offset_x = -dy / length * 0.16
+            offset_y = dx / length * 0.16
+
+        ax.text(
+            middle_x + offset_x,
+            middle_y + offset_y,
+            f"{flow}/{capacity}",
+            fontsize=7.7,
+            fontweight="bold" if flow == capacity else "normal",
+            ha="center",
+            va="center",
+            color="#1F4F73" if flow == capacity else "#222222",
+            zorder=38,
+            bbox={
+                "boxstyle": "round,pad=0.16",
+                "fc": "white",
+                "ec": "none",
+                "alpha": 0.97,
+            },
+        )
+
+    def _dibujar_panel_edmonds_karp(
+        self,
+        ax,
+        queue,
+        augmenting_path,
+        bottleneck,
+        augmentation_index,
+        flow_value,
+        phase,
+        reachable_nodes,
+        all_nodes,
+        cut_edges,
+        cut_capacity,
+    ):
+        """
+        Dibuja cola BFS, camino aumentante o corte mínimo.
+        """
+
+        ax.clear()
+        ax.axis("off")
+        ax.set_xlim(0, 1)
+        ax.set_ylim(0, 1)
+
+        ax.text(
+            0.02,
+            0.93,
+            (
+                f"Edmonds-Karp · aumento {augmentation_index} · "
+                f"flujo {flow_value}"
+            ),
+            fontsize=11.3,
+            fontweight="bold",
+            ha="left",
+            va="center",
+        )
+
+        if phase in {"min_cut", "finished"}:
+            source_side = sorted(reachable_nodes)
+            sink_side = sorted(set(all_nodes) - set(reachable_nodes))
+
+            ax.text(
+                0.02,
+                0.70,
+                "Lado S: " + ", ".join(source_side),
+                fontsize=8.8,
+                fontweight="bold",
+                ha="left",
+                va="center",
+                bbox={
+                    "boxstyle": "round,pad=0.30",
+                    "fc": "#B7D7F0",
+                    "ec": "#1F4F73",
+                    "alpha": 0.98,
+                },
+            )
+
+            ax.text(
+                0.98,
+                0.70,
+                "Lado T: " + ", ".join(sink_side),
+                fontsize=8.8,
+                fontweight="bold",
+                ha="right",
+                va="center",
+                bbox={
+                    "boxstyle": "round,pad=0.30",
+                    "fc": "#F8D7B5",
+                    "ec": "#8A4B08",
+                    "alpha": 0.98,
+                },
+            )
+
+            ax.text(
+                0.02,
+                0.46,
+                "Aristas del corte mínimo",
+                fontsize=10.5,
+                fontweight="bold",
+                ha="left",
+                va="center",
+            )
+
+            visible_cut_edges = list(cut_edges[:8])
+
+            if visible_cut_edges:
+                cell_width = 0.125
+                gap = 0.018
+                occupied_width = (
+                    len(visible_cut_edges) * cell_width
+                    + max(0, len(visible_cut_edges) - 1) * gap
+                )
+                current_x = 0.50 - occupied_width / 2
+
+                for origin, destination, capacity in visible_cut_edges:
+                    rectangle = Rectangle(
+                        (current_x, 0.12),
+                        cell_width,
+                        0.23,
+                        facecolor="#F6B4B4",
+                        edgecolor="#C62828",
+                        linewidth=1.8,
+                    )
+                    ax.add_patch(rectangle)
+
+                    ax.text(
+                        current_x + cell_width / 2,
+                        0.255,
+                        f"{origin}→{destination}",
+                        fontsize=7.4,
+                        fontweight="bold",
+                        ha="center",
+                        va="center",
+                    )
+
+                    ax.text(
+                        current_x + cell_width / 2,
+                        0.17,
+                        f"c={capacity}",
+                        fontsize=6.8,
+                        ha="center",
+                        va="center",
+                    )
+
+                    current_x += cell_width + gap
+
+            ax.text(
+                0.98,
+                0.46,
+                f"capacidad = {cut_capacity}",
+                fontsize=9.2,
+                fontweight="bold",
+                ha="right",
+                va="center",
+                color="#C62828",
+            )
+
+            return
+
+        ax.text(
+            0.02,
+            0.68,
+            "Cola BFS residual",
+            fontsize=10.4,
+            fontweight="bold",
+            ha="left",
+            va="center",
+        )
+
+        queue = list(queue)
+
+        if queue:
+            max_cells = 10
+            visible_queue = queue[:max_cells]
+            cell_width = 0.060
+            gap = 0.010
+            occupied_width = (
+                len(visible_queue) * cell_width
+                + max(0, len(visible_queue) - 1) * gap
+            )
+            current_x = 0.50 - occupied_width / 2
+
+            for index, node in enumerate(visible_queue):
+                is_next = index == 0
+
+                rectangle = Rectangle(
+                    (current_x, 0.56),
+                    cell_width,
+                    0.18,
+                    facecolor="#E45756" if is_next else "#FBE5A6",
+                    edgecolor="#7A1D1D" if is_next else "#8A6D1D",
+                    linewidth=2.0 if is_next else 1.4,
+                )
+                ax.add_patch(rectangle)
+
+                ax.text(
+                    current_x + cell_width / 2,
+                    0.65,
+                    str(node),
+                    fontsize=8.2,
+                    fontweight="bold",
+                    ha="center",
+                    va="center",
+                )
+
+                current_x += cell_width + gap
+        else:
+            ax.text(
+                0.50,
+                0.65,
+                "cola vacía",
+                fontsize=8.8,
+                fontweight="bold",
+                ha="center",
+                va="center",
+                color="#666666",
+            )
+
+        ax.text(
+            0.02,
+            0.38,
+            "Camino aumentante residual",
+            fontsize=10.4,
+            fontweight="bold",
+            ha="left",
+            va="center",
+        )
+
+        augmenting_path = list(augmenting_path)
+
+        if augmenting_path:
+            max_cells = 8
+            visible_path = augmenting_path[:max_cells]
+            cell_width = 0.115
+            gap = 0.012
+            occupied_width = (
+                len(visible_path) * cell_width
+                + max(0, len(visible_path) - 1) * gap
+            )
+            current_x = 0.50 - occupied_width / 2
+
+            for arco in visible_path:
+                is_reverse = arco.get("direction") == "inverso"
+
+                rectangle = Rectangle(
+                    (current_x, 0.08),
+                    cell_width,
+                    0.22,
+                    facecolor="#E8D7F1" if is_reverse else "#B7E4C7",
+                    edgecolor="#8E5EA2" if is_reverse else "#2E8B57",
+                    linewidth=1.7,
+                )
+                ax.add_patch(rectangle)
+
+                ax.text(
+                    current_x + cell_width / 2,
+                    0.215,
+                    (
+                        f"{arco['origin']}→"
+                        f"{arco['destination']}"
+                    ),
+                    fontsize=7.0,
+                    fontweight="bold",
+                    ha="center",
+                    va="center",
+                )
+
+                ax.text(
+                    current_x + cell_width / 2,
+                    0.135,
+                    (
+                        f"r={arco['residual']} · "
+                        f"{'inv' if is_reverse else 'dir'}"
+                    ),
+                    fontsize=6.2,
+                    ha="center",
+                    va="center",
+                )
+
+                current_x += cell_width + gap
+
+            ax.text(
+                0.98,
+                0.38,
+                (
+                    "Δ = "
+                    + ("—" if bottleneck is None else str(bottleneck))
+                ),
+                fontsize=9.2,
+                fontweight="bold",
+                ha="right",
+                va="center",
+                color="#2E8B57",
+            )
+        else:
+            ax.text(
+                0.50,
+                0.19,
+                "todavía no reconstruido",
+                fontsize=8.6,
+                ha="center",
+                va="center",
+                color="#666666",
+            )
+
+    def _dibujar_estado_flujo_maximo(
+        self,
+        graph_ax,
+        info_ax,
+        structure_ax,
+        graph,
+        pos,
+        state,
+        source_node,
+        sink_node,
+    ):
+        """
+        Dibuja un estado completo de Edmonds-Karp.
+        """
+
+        graph_ax.clear()
+        graph_ax.axis("off")
+
+        limits = self._calcular_limites(
+            pos,
+            margin_x=1.25,
+            margin_y=1.10,
+        )
+
+        graph_ax.set_xlim(limits[0], limits[1])
+        graph_ax.set_ylim(limits[2], limits[3])
+        graph_ax.set_aspect("equal", adjustable="box")
+
+        flows = dict(state.get("flows", {}))
+        visited = set(state.get("visited", set()))
+        queue = list(state.get("queue", []))
+        current_node = state.get("current_node")
+        active_residual_edge = state.get("active_residual_edge")
+        augmenting_path = list(state.get("augmenting_path", []))
+        reachable_nodes = set(state.get("reachable_nodes", set()))
+        cut_edges = list(state.get("cut_edges", []))
+        cut_capacity = state.get("cut_capacity")
+        phase = state.get("phase", "bfs")
+        action = state.get("action")
+
+        active_original = None
+        active_direction = None
+
+        if active_residual_edge is not None:
+            active_original = tuple(
+                active_residual_edge.get("original_edge", ())
+            )
+            active_direction = active_residual_edge.get("direction")
+
+        direct_path_edges = {
+            tuple(arco["original_edge"])
+            for arco in augmenting_path
+            if arco.get("direction") == "directo"
+        }
+        reverse_path_arcs = [
+            arco
+            for arco in augmenting_path
+            if arco.get("direction") == "inverso"
+        ]
+        path_nodes = set()
+
+        for arco in augmenting_path:
+            path_nodes.add(arco["origin"])
+            path_nodes.add(arco["destination"])
+
+        cut_edge_keys = {
+            (origin, destination)
+            for origin, destination, _ in cut_edges
+        }
+
+        # 1. Aristas originales.
+        for origin, destination, data in graph.edges(data=True):
+            edge_key = (origin, destination)
+            capacity = data.get("capacity", 0)
+            flow = flows.get(edge_key, 0)
+
+            if edge_key in cut_edge_keys:
+                color = "#C62828"
+                line_width = 4.2
+                line_style = "solid"
+                zorder = 22
+            elif (
+                edge_key == active_original
+                and active_direction == "directo"
+            ):
+                color = "#E45756"
+                line_width = 4.2
+                line_style = "solid"
+                zorder = 21
+            elif edge_key in direct_path_edges:
+                color = "#2E8B57"
+                line_width = 3.6
+                line_style = "solid"
+                zorder = 18
+            elif flow == capacity:
+                color = "#4C78A8"
+                line_width = 2.7
+                line_style = "solid"
+                zorder = 15
+            elif flow > 0:
+                color = "#74A66A"
+                line_width = 2.4
+                line_style = "solid"
+                zorder = 14
+            else:
+                color = "#B8B8B8"
+                line_width = 1.6
+                line_style = "solid"
+                zorder = 10
+
+            self._dibujar_flecha_flujo(
+                ax=graph_ax,
+                pos=pos,
+                origin=origin,
+                destination=destination,
+                color=color,
+                line_width=line_width,
+                zorder=zorder,
+                line_style=line_style,
+                curvature=0.0,
+            )
+
+            self._dibujar_etiqueta_flujo_arista(
+                ax=graph_ax,
+                pos=pos,
+                origin=origin,
+                destination=destination,
+                flow=flow,
+                capacity=capacity,
+            )
+
+        # 2. Residuales inversas pertenecientes al camino.
+        for arco in reverse_path_arcs:
+            is_active = (
+                active_residual_edge is not None
+                and arco.get("origin")
+                == active_residual_edge.get("origin")
+                and arco.get("destination")
+                == active_residual_edge.get("destination")
+                and arco.get("original_edge")
+                == active_residual_edge.get("original_edge")
+            )
+
+            self._dibujar_flecha_flujo(
+                ax=graph_ax,
+                pos=pos,
+                origin=arco["origin"],
+                destination=arco["destination"],
+                color="#E45756" if is_active else "#8E5EA2",
+                line_width=4.3 if is_active else 3.5,
+                zorder=25,
+                line_style="dashed",
+                curvature=0.16,
+            )
+
+        # Una residual inversa puede estar activa durante BFS antes de que
+        # el camino completo haya sido reconstruido.
+        if (
+            active_residual_edge is not None
+            and active_direction == "inverso"
+            and not any(
+                arco.get("origin")
+                == active_residual_edge.get("origin")
+                and arco.get("destination")
+                == active_residual_edge.get("destination")
+                and arco.get("original_edge")
+                == active_residual_edge.get("original_edge")
+                for arco in reverse_path_arcs
+            )
+        ):
+            self._dibujar_flecha_flujo(
+                ax=graph_ax,
+                pos=pos,
+                origin=active_residual_edge["origin"],
+                destination=active_residual_edge["destination"],
+                color="#8E5EA2",
+                line_width=4.1,
+                zorder=25,
+                line_style="dashed",
+                curvature=0.16,
+            )
+
+        # 3. Estados de nodos.
+        for node in graph.nodes():
+            if phase in {"min_cut", "finished"}:
+                if node in reachable_nodes:
+                    face_color = "#B7D7F0"
+                    edge_color = "#1F4F73"
+                else:
+                    face_color = "#F8D7B5"
+                    edge_color = "#8A4B08"
+            elif node == current_node:
+                face_color = "#E45756"
+                edge_color = "#7A1D1D"
+            elif node in path_nodes:
+                face_color = "#B7E4C7"
+                edge_color = "#2E8B57"
+            elif node in visited:
+                face_color = "#F6C85F"
+                edge_color = "#8A6D1D"
+            else:
+                face_color = "#D9D9D9"
+                edge_color = "#666666"
+
+            node_size = 800
+
+            if node == source_node:
+                face_color = "#7BC67B"
+                edge_color = "#27632A"
+                node_size = 930
+            elif node == sink_node:
+                face_color = "#D8C4E8"
+                edge_color = "#5A316B"
+                node_size = 930
+
+            if node == current_node:
+                face_color = "#E45756"
+                edge_color = "#7A1D1D"
+                node_size = 950
+
+            collection = nx.draw_networkx_nodes(
+                graph,
+                pos,
+                nodelist=[node],
+                node_size=node_size,
+                node_color=face_color,
+                edgecolors=edge_color,
+                linewidths=2.5 if node in {
+                    source_node,
+                    sink_node,
+                    current_node,
+                } else 1.5,
+                ax=graph_ax,
+            )
+            collection.set_zorder(30)
+
+        # 4. Etiquetas de nodos.
+        for node, (x, y) in pos.items():
+            graph_ax.text(
+                x,
+                y,
+                str(node),
+                fontsize=10,
+                fontweight="bold",
+                ha="center",
+                va="center",
+                color="black",
+                zorder=38,
+            )
+
+        source_x, source_y = pos[source_node]
+        sink_x, sink_y = pos[sink_node]
+
+        graph_ax.text(
+            source_x,
+            source_y - 0.45,
+            "fuente",
+            fontsize=8,
+            fontweight="bold",
+            ha="center",
+            va="top",
+            color="#27632A",
+            zorder=40,
+        )
+
+        graph_ax.text(
+            sink_x,
+            sink_y - 0.45,
+            "sumidero",
+            fontsize=8,
+            fontweight="bold",
+            ha="center",
+            va="top",
+            color="#5A316B",
+            zorder=40,
+        )
+
+        # 5. Operación activa y mensaje.
+        if active_residual_edge is not None:
+            original_origin, original_destination = (
+                active_residual_edge["original_edge"]
+            )
+            direction_text = (
+                "directa"
+                if active_residual_edge.get("direction") == "directo"
+                else "inversa"
+            )
+
+            operation_text = (
+                f"Residual {direction_text} "
+                f"{active_residual_edge['origin']}→"
+                f"{active_residual_edge['destination']} "
+                f"(original {original_origin}→{original_destination}) "
+                f"· capacidad residual "
+                f"{active_residual_edge['residual']}"
+            )
+
+            old_flow = state.get("old_flow")
+            new_flow = state.get("new_flow")
+
+            if old_flow is not None and new_flow is not None:
+                operation_text += (
+                    f" · flujo original {old_flow}→{new_flow}"
+                )
+
+            graph_ax.text(
+                0.50,
+                0.965,
+                operation_text,
+                transform=graph_ax.transAxes,
+                fontsize=7.8,
+                ha="center",
+                va="top",
+                bbox={
+                    "boxstyle": "round,pad=0.28",
+                    "fc": "white",
+                    "ec": "#999999",
+                    "alpha": 0.96,
+                },
+                zorder=50,
+            )
+
+        graph_ax.text(
+            0.50,
+            0.015,
+            state.get("message", ""),
+            transform=graph_ax.transAxes,
+            fontsize=8.8,
+            ha="center",
+            va="bottom",
+            bbox={
+                "boxstyle": "round,pad=0.38",
+                "fc": "white",
+                "ec": "#777777",
+                "alpha": 0.96,
+            },
+            zorder=50,
+        )
+
+        flow_value = state.get("flow_value", 0)
+        augmentation_index = state.get("augmentation_index", 0)
+
+        if phase in {"min_cut", "finished"}:
+            status_text = (
+                f"Flujo máximo: {flow_value} · "
+                f"corte mínimo: {cut_capacity}"
+            )
+        elif phase == "no_path":
+            status_text = (
+                f"Sin camino aumentante · flujo {flow_value}"
+            )
+        elif phase == "bfs":
+            status_text = (
+                f"Aumento {augmentation_index} · flujo {flow_value} · "
+                f"visitados {len(visited)}"
+            )
+        else:
+            bottleneck = state.get("bottleneck")
+            bottleneck_text = (
+                "—" if bottleneck is None else str(bottleneck)
+            )
+            status_text = (
+                f"Aumento {augmentation_index} · flujo {flow_value} · "
+                f"Δ={bottleneck_text}"
+            )
+
+        graph_ax.text(
+            0.99,
+            0.985,
+            status_text,
+            transform=graph_ax.transAxes,
+            fontsize=8.6,
+            ha="right",
+            va="top",
+            bbox={
+                "boxstyle": "round,pad=0.30",
+                "fc": "white",
+                "ec": "#999999",
+                "alpha": 0.96,
+            },
+            zorder=50,
+        )
+
+        self._dibujar_tabla_aristas_flujo(
+            ax=info_ax,
+            graph=graph,
+            flows=flows,
+            active_residual_edge=active_residual_edge,
+            augmenting_path=augmenting_path,
+            cut_edges=cut_edges,
+            phase=phase,
+            flow_value=flow_value,
+            cut_capacity=cut_capacity,
+        )
+
+        self._dibujar_panel_edmonds_karp(
+            ax=structure_ax,
+            queue=queue,
+            augmenting_path=augmenting_path,
+            bottleneck=state.get("bottleneck"),
+            augmentation_index=augmentation_index,
+            flow_value=flow_value,
+            phase=phase,
+            reachable_nodes=reachable_nodes,
+            all_nodes=list(graph.nodes()),
+            cut_edges=cut_edges,
+            cut_capacity=cut_capacity,
+        )
+
+    def animate_max_flow_min_cut(
+        self,
+        graph,
+        pos,
+        states,
+        source_node,
+        sink_node,
+        title="Flujo máximo y corte mínimo con Edmonds-Karp",
+        final_image_path=None,
+        repeat=False,
+    ):
+        """
+        Anima Edmonds-Karp y la obtención del corte mínimo.
+
+        La imagen final muestra:
+        - flujo y capacidad de todas las aristas;
+        - capacidades residuales directas e inversas;
+        - partición del corte mínimo;
+        - aristas saturadas que cruzan el corte;
+        - igualdad entre flujo máximo y corte mínimo.
+        """
+
+        if not states:
+            raise ValueError(
+                "La lista de estados de Edmonds-Karp no puede estar vacía."
+            )
+
+        (
+            fig,
+            graph_ax,
+            info_ax,
+            structure_ax,
+        ) = self._preparar_figura_flujo_maximo(title)
+
+        if final_image_path is not None:
+            self._dibujar_estado_flujo_maximo(
+                graph_ax=graph_ax,
+                info_ax=info_ax,
+                structure_ax=structure_ax,
+                graph=graph,
+                pos=pos,
+                state=states[-1],
+                source_node=source_node,
+                sink_node=sink_node,
+            )
+
+            final_image_path = Path(final_image_path)
+            final_image_path.parent.mkdir(
+                parents=True,
+                exist_ok=True,
+            )
+
+            fig.savefig(
+                final_image_path,
+                dpi=200,
+                bbox_inches="tight",
+            )
+
+            print(
+                f"Imagen final guardada en: "
+                f"{final_image_path}"
+            )
+
+        def init():
+            self._dibujar_estado_flujo_maximo(
+                graph_ax=graph_ax,
+                info_ax=info_ax,
+                structure_ax=structure_ax,
+                graph=graph,
+                pos=pos,
+                state=states[0],
+                source_node=source_node,
+                sink_node=sink_node,
+            )
+            return []
+
+        def update(frame_index):
+            self._dibujar_estado_flujo_maximo(
+                graph_ax=graph_ax,
+                info_ax=info_ax,
+                structure_ax=structure_ax,
+                graph=graph,
+                pos=pos,
+                state=states[frame_index],
+                source_node=source_node,
+                sink_node=sink_node,
             )
             return []
 
