@@ -22,6 +22,7 @@ class GraphAnimator:
     - restricciones relativas entre poses y transición a Graph SLAM,
     - variables, mediciones, predicciones y errores en SE(2),
     - funciones de coste y mínimos cuadrados,
+    - incertidumbre, covarianza y matrices de información,
     - caminos mínimos con Bellman-Ford,
     - caminos mínimos con Floyd-Warshall,
     - árboles de expansión mínima con Prim y Kruskal,
@@ -15108,6 +15109,1142 @@ class GraphAnimator:
                 weighted_ax=weighted_ax,
                 graph_ax=graph_ax,
                 history_ax=history_ax,
+                graph=graph,
+                state=states[frame_index],
+            )
+            return []
+
+        self.animation = FuncAnimation(
+            fig,
+            update,
+            frames=len(states),
+            init_func=init,
+            interval=self.interval,
+            repeat=repeat,
+            blit=False,
+        )
+
+        plt.show()
+        return self.animation
+    # ------------------------------------------------------------------
+    # Incertidumbre, covarianza y matriz de información
+    # ------------------------------------------------------------------
+
+    def _preparar_figura_incertidumbre(self, title):
+        """Crea una distribución visual comparable a los apartados 5.1-5.3."""
+
+        fig = plt.figure(figsize=self.figsize)
+        grid = fig.add_gridspec(
+            3,
+            3,
+            width_ratios=[1.60, 3.55, 2.05],
+            height_ratios=[2.25, 2.10, 1.45],
+            wspace=0.12,
+            hspace=0.18,
+        )
+
+        info_ax = fig.add_subplot(grid[:, 0])
+        geometry_ax = fig.add_subplot(grid[0:2, 1])
+        comparison_ax = fig.add_subplot(grid[2, 1])
+        matrices_ax = fig.add_subplot(grid[0, 2])
+        graph_ax = fig.add_subplot(grid[1, 2])
+        flow_ax = fig.add_subplot(grid[2, 2])
+
+        fig.suptitle(title, fontsize=15, fontweight="bold")
+        fig.subplots_adjust(
+            left=0.025,
+            right=0.985,
+            top=0.93,
+            bottom=0.045,
+        )
+
+        return (
+            fig,
+            info_ax,
+            geometry_ax,
+            comparison_ax,
+            matrices_ax,
+            graph_ax,
+            flow_ax,
+        )
+
+    @staticmethod
+    def _formatear_vector_2d_incertidumbre(vector, decimals=3):
+        """Formatea un vector bidimensional para tarjetas y etiquetas."""
+
+        if vector is None or len(vector) != 2:
+            return "(—, —)"
+
+        return f"({vector[0]:.{decimals}f}, {vector[1]:.{decimals}f})"
+
+    @staticmethod
+    def _formatear_matriz_2d_incertidumbre(matrix, decimals=3):
+        """Formatea una matriz 2x2 en dos líneas compactas."""
+
+        if matrix is None or len(matrix) != 2:
+            return "[[—, —],\n [—, —]]"
+
+        return (
+            f"[[{matrix[0][0]:.{decimals}f}, {matrix[0][1]:.{decimals}f}],\n"
+            f" [{matrix[1][0]:.{decimals}f}, {matrix[1][1]:.{decimals}f}]]"
+        )
+
+    def _dibujar_panel_incertidumbre(self, ax, state):
+        """Dibuja las magnitudes numéricas y la explicación del fotograma."""
+
+        ax.clear()
+        ax.axis("off")
+        ax.set_xlim(0, 1)
+        ax.set_ylim(0, 1)
+
+        step = state.get("step", 1)
+        total_steps = state.get("total_steps", 1)
+        measurements = state.get("measurements", [[0, 0], [0, 0]])
+        sigmas = state.get("sigmas", [[0, 0], [0, 0]])
+        information_traces = state.get("information_traces", [0, 0])
+        mahalanobis = state.get("mahalanobis_squared", [0, 0])
+        weighted_mean = state.get("weighted_mean", [0, 0])
+        unweighted_mean = state.get("unweighted_mean", [0, 0])
+
+        ax.text(
+            0.50,
+            0.985,
+            "Datos y confianza",
+            fontsize=12,
+            fontweight="bold",
+            ha="center",
+            va="top",
+        )
+
+        ax.text(
+            0.50,
+            0.948,
+            f"Estado {step} de {total_steps}",
+            fontsize=8.2,
+            ha="center",
+            va="top",
+            color="#444444",
+        )
+
+        cards = [
+            (
+                0.825,
+                "Medición fiable",
+                (
+                    f"μ₁ = {self._formatear_vector_2d_incertidumbre(measurements[0])}\n"
+                    f"σ₁ = {self._formatear_vector_2d_incertidumbre(sigmas[0])}\n"
+                    f"tr(Ω₁) = {information_traces[0]:.3f}"
+                ),
+                "#DDF1E5",
+                "#2E8B57",
+            ),
+            (
+                0.660,
+                "Medición poco fiable",
+                (
+                    f"μ₂ = {self._formatear_vector_2d_incertidumbre(measurements[1])}\n"
+                    f"σ₂ = {self._formatear_vector_2d_incertidumbre(sigmas[1])}\n"
+                    f"tr(Ω₂) = {information_traces[1]:.3f}"
+                ),
+                "#FCE6D4",
+                "#F28E2B",
+            ),
+            (
+                0.495,
+                "Mismo residuo",
+                (
+                    f"e = {self._formatear_vector_2d_incertidumbre(state.get('residual'))}\n"
+                    f"||e||₂ = {state.get('euclidean_distance', 0.0):.4f}\n"
+                    f"eᵀΩ₁e = {mahalanobis[0]:.4f}"
+                    f" · eᵀΩ₂e = {mahalanobis[1]:.4f}"
+                ),
+                "#EEE7F4",
+                "#8E5EA2",
+            ),
+            (
+                0.330,
+                "Fusión",
+                (
+                    f"sin pesos = {self._formatear_vector_2d_incertidumbre(unweighted_mean)}\n"
+                    f"con Ω = {self._formatear_vector_2d_incertidumbre(weighted_mean)}\n"
+                    "la solución se acerca a la más fiable"
+                ),
+                "#DDEAF4",
+                "#1F4F73",
+            ),
+        ]
+
+        for y, title, body, face_color, edge_color in cards:
+            rectangle = Rectangle(
+                (0.07, y - 0.115),
+                0.86,
+                0.135,
+                facecolor=face_color,
+                edgecolor=edge_color,
+                linewidth=1.5,
+            )
+            ax.add_patch(rectangle)
+            ax.text(
+                0.11,
+                y,
+                title,
+                fontsize=8.7,
+                fontweight="bold",
+                ha="left",
+                va="top",
+            )
+            ax.text(
+                0.11,
+                y - 0.032,
+                body,
+                fontsize=6.9,
+                ha="left",
+                va="top",
+                linespacing=1.35,
+            )
+
+        phase_labels = {
+            "introduction": "Una medición necesita valor e incertidumbre",
+            "reliable_measurement": "Medición fiable",
+            "reliable_sigmas": "Desviaciones estándar",
+            "reliable_ellipse": "Elipse de incertidumbre",
+            "uncertain_measurement": "Medición poco fiable",
+            "compare_ellipses": "Comparación de dispersiones",
+            "information_inverse": "Información como inversa",
+            "same_residual": "Mismo residuo geométrico",
+            "mahalanobis": "Coste de Mahalanobis",
+            "scale_experiment": "Cambio de covarianza",
+            "unweighted_fusion": "Fusión sin incertidumbre",
+            "weighted_fusion": "Fusión ponderada",
+            "factor_graph": "Grafo de factores",
+            "sensor_connection": "Conexión con sensores",
+            "summary": "Resumen",
+        }
+
+        ax.text(
+            0.50,
+            0.175,
+            phase_labels.get(state.get("phase"), state.get("phase", "")),
+            fontsize=9.2,
+            fontweight="bold",
+            ha="center",
+            va="center",
+            color="#333333",
+        )
+
+        ax.text(
+            0.50,
+            0.075,
+            state.get("message", ""),
+            fontsize=7.8,
+            ha="center",
+            va="center",
+            wrap=True,
+            bbox={
+                "boxstyle": "round,pad=0.42",
+                "fc": "white",
+                "ec": "#777777",
+                "alpha": 0.97,
+            },
+        )
+
+    def _dibujar_elipse_incertidumbre(
+        self,
+        ax,
+        center,
+        ellipse_data,
+        face_color,
+        edge_color,
+        alpha=0.20,
+        line_width=2.2,
+        zorder=8,
+    ):
+        """Dibuja una elipse precomputada por el script principal."""
+
+        ellipse = Ellipse(
+            xy=(center[0], center[1]),
+            width=ellipse_data.get("width", 0.0),
+            height=ellipse_data.get("height", 0.0),
+            angle=ellipse_data.get("angle_deg", 0.0),
+            facecolor=face_color,
+            edgecolor=edge_color,
+            linewidth=line_width,
+            alpha=alpha,
+            zorder=zorder,
+        )
+        ax.add_patch(ellipse)
+
+        angle = ellipse_data.get("angle_deg", 0.0) * pi / 180.0
+        semi_major = ellipse_data.get("semi_major", 0.0)
+        semi_minor = ellipse_data.get("semi_minor", 0.0)
+
+        major_dx = semi_major * cos(angle)
+        major_dy = semi_major * sin(angle)
+        minor_dx = -semi_minor * sin(angle)
+        minor_dy = semi_minor * cos(angle)
+
+        ax.plot(
+            [center[0] - major_dx, center[0] + major_dx],
+            [center[1] - major_dy, center[1] + major_dy],
+            color=edge_color,
+            linewidth=1.0,
+            alpha=0.75,
+            zorder=zorder + 1,
+        )
+        ax.plot(
+            [center[0] - minor_dx, center[0] + minor_dx],
+            [center[1] - minor_dy, center[1] + minor_dy],
+            color=edge_color,
+            linewidth=1.0,
+            alpha=0.75,
+            zorder=zorder + 1,
+        )
+
+    def _dibujar_geometria_incertidumbre(self, ax, state):
+        """Dibuja puntos, elipses, residuos y resultados de la fusión."""
+
+        ax.clear()
+        ax.set_aspect("equal", adjustable="box")
+        ax.set_xlim(1.25, 6.90)
+        ax.set_ylim(0.35, 5.55)
+        ax.grid(alpha=0.20)
+        ax.set_xlabel("x [m]", fontsize=8)
+        ax.set_ylabel("y [m]", fontsize=8)
+        ax.tick_params(labelsize=7)
+        ax.set_title(
+            "Dos mediciones 2D con distinta incertidumbre",
+            fontsize=11.0,
+            fontweight="bold",
+            loc="left",
+        )
+
+        measurements = state.get("measurements", [[0, 0], [0, 0]])
+        ellipses = state.get("ellipses", [{}, {}])
+        residual_points = state.get("same_residual_points", [[0, 0], [0, 0]])
+
+        show_reliable = state.get("show_measurement_reliable", False)
+        show_uncertain = state.get("show_measurement_uncertain", False)
+
+        if state.get("show_ellipse_reliable", False):
+            self._dibujar_elipse_incertidumbre(
+                ax,
+                measurements[0],
+                ellipses[0],
+                face_color="#7BC8A4",
+                edge_color="#2E8B57",
+                alpha=0.24,
+            )
+
+        if state.get("show_ellipse_uncertain", False):
+            self._dibujar_elipse_incertidumbre(
+                ax,
+                measurements[1],
+                ellipses[1],
+                face_color="#F5B97A",
+                edge_color="#F28E2B",
+                alpha=0.20,
+            )
+
+        if show_reliable:
+            ax.scatter(
+                [measurements[0][0]],
+                [measurements[0][1]],
+                s=155,
+                marker="o",
+                color="#4CAF7A",
+                edgecolors="#1D5A38",
+                linewidths=1.7,
+                zorder=20,
+            )
+            ax.text(
+                measurements[0][0] - 0.08,
+                measurements[0][1] - 0.24,
+                "z₁ fiable",
+                fontsize=8.0,
+                fontweight="bold",
+                ha="right",
+                va="top",
+                color="#1D5A38",
+                zorder=25,
+            )
+
+        if show_uncertain:
+            ax.scatter(
+                [measurements[1][0]],
+                [measurements[1][1]],
+                s=155,
+                marker="o",
+                color="#F28E2B",
+                edgecolors="#8A4B08",
+                linewidths=1.7,
+                zorder=20,
+            )
+            ax.text(
+                measurements[1][0] + 0.08,
+                measurements[1][1] + 0.18,
+                "z₂ poco fiable",
+                fontsize=8.0,
+                fontweight="bold",
+                ha="left",
+                va="bottom",
+                color="#8A4B08",
+                zorder=25,
+            )
+
+        if state.get("show_same_residual", False):
+            colors = ["#8E5EA2", "#7B2CBF"]
+
+            for index in range(2):
+                start = measurements[index]
+                end = residual_points[index]
+                arrow = FancyArrowPatch(
+                    (start[0], start[1]),
+                    (end[0], end[1]),
+                    arrowstyle="-|>",
+                    mutation_scale=14,
+                    linewidth=2.2,
+                    color=colors[index],
+                    zorder=28,
+                )
+                ax.add_patch(arrow)
+                ax.scatter(
+                    [end[0]],
+                    [end[1]],
+                    s=55,
+                    marker="x",
+                    color=colors[index],
+                    linewidths=1.8,
+                    zorder=29,
+                )
+
+            ax.text(
+                0.02,
+                0.97,
+                "Mismo vector e aplicado a ambas mediciones",
+                transform=ax.transAxes,
+                fontsize=7.7,
+                ha="left",
+                va="top",
+                bbox={
+                    "boxstyle": "round,pad=0.28",
+                    "fc": "white",
+                    "ec": "#8E5EA2",
+                    "alpha": 0.95,
+                },
+            )
+
+        if state.get("show_unweighted_fusion", False):
+            point = state.get("unweighted_mean", [0, 0])
+            ax.scatter(
+                [point[0]],
+                [point[1]],
+                s=145,
+                marker="s",
+                color="#BDBDBD",
+                edgecolors="#555555",
+                linewidths=1.6,
+                zorder=30,
+            )
+            ax.text(
+                point[0],
+                point[1] - 0.19,
+                "media sin pesos",
+                fontsize=7.5,
+                ha="center",
+                va="top",
+                color="#444444",
+            )
+
+        if state.get("show_weighted_fusion", False):
+            point = state.get("weighted_mean", [0, 0])
+            fused_ellipse = state.get("fused_ellipse", {})
+            self._dibujar_elipse_incertidumbre(
+                ax,
+                point,
+                fused_ellipse,
+                face_color="#80B1D3",
+                edge_color="#1F4F73",
+                alpha=0.18,
+                line_width=2.0,
+                zorder=14,
+            )
+            ax.scatter(
+                [point[0]],
+                [point[1]],
+                s=190,
+                marker="*",
+                color="#4C9ED9",
+                edgecolors="#1F4F73",
+                linewidths=1.4,
+                zorder=32,
+            )
+            ax.text(
+                point[0] + 0.07,
+                point[1] + 0.17,
+                "fusión con Ω",
+                fontsize=8.0,
+                fontweight="bold",
+                ha="left",
+                va="bottom",
+                color="#1F4F73",
+            )
+
+            for measurement in measurements:
+                ax.plot(
+                    [measurement[0], point[0]],
+                    [measurement[1], point[1]],
+                    color="#999999",
+                    linewidth=1.0,
+                    linestyle="dashed",
+                    zorder=11,
+                )
+
+        if state.get("show_scale_experiment", False):
+            ax.text(
+                0.98,
+                0.03,
+                (
+                    f"escala σ₂ = {state.get('uncertainty_scale', 1.0):.2f}\n"
+                    f"área elipse₂ = {state.get('ellipse_areas', [0, 0])[1]:.3f}\n"
+                    f"tr(Ω₂) = {state.get('information_traces', [0, 0])[1]:.3f}"
+                ),
+                transform=ax.transAxes,
+                fontsize=7.5,
+                ha="right",
+                va="bottom",
+                bbox={
+                    "boxstyle": "round,pad=0.32",
+                    "fc": "white",
+                    "ec": "#F28E2B",
+                    "alpha": 0.96,
+                },
+            )
+
+        legend_handles = [
+            Line2D(
+                [0],
+                [0],
+                marker="o",
+                color="none",
+                markerfacecolor="#4CAF7A",
+                markeredgecolor="#1D5A38",
+                markersize=8,
+                label="Medición fiable",
+            ),
+            Line2D(
+                [0],
+                [0],
+                marker="o",
+                color="none",
+                markerfacecolor="#F28E2B",
+                markeredgecolor="#8A4B08",
+                markersize=8,
+                label="Medición poco fiable",
+            ),
+            Line2D(
+                [0],
+                [0],
+                marker="*",
+                color="none",
+                markerfacecolor="#4C9ED9",
+                markeredgecolor="#1F4F73",
+                markersize=10,
+                label="Fusión ponderada",
+            ),
+        ]
+        ax.legend(
+            handles=legend_handles,
+            loc="lower right",
+            fontsize=7.0,
+            framealpha=0.95,
+        )
+
+    def _dibujar_comparacion_incertidumbre(self, ax, state):
+        """Compara costes y muestra el experimento de escalado de Σ."""
+
+        ax.clear()
+
+        history = list(state.get("scale_history", []))
+
+        if state.get("show_scale_experiment", False) and history:
+            scales = [item.get("scale", 0.0) for item in history]
+            costs = [item.get("cost", 0.0) for item in history]
+            traces = [item.get("information_trace", 0.0) for item in history]
+
+            ax.plot(
+                scales,
+                costs,
+                marker="o",
+                linewidth=2.1,
+                markersize=4.3,
+                color="#8E5EA2",
+                label="eᵀΩ₂e",
+            )
+            ax.plot(
+                scales,
+                traces,
+                marker="s",
+                linewidth=1.8,
+                markersize=3.8,
+                color="#F28E2B",
+                label="tr(Ω₂)",
+            )
+            ax.set_xlabel("Factor aplicado a σ₂", fontsize=8)
+            ax.set_ylabel("Valor", fontsize=8)
+            ax.set_title(
+                "Al crecer Σ disminuyen información y coste",
+                fontsize=9.6,
+                fontweight="bold",
+                loc="left",
+            )
+            ax.tick_params(labelsize=7)
+            ax.grid(alpha=0.22)
+            ax.legend(fontsize=7, loc="upper right")
+        elif state.get("show_mahalanobis", False):
+            costs = state.get("mahalanobis_squared", [0.0, 0.0])
+            labels = ["fiable", "poco fiable"]
+            bars = ax.barh(
+                labels,
+                costs,
+                color=["#4CAF7A", "#F28E2B"],
+                edgecolor=["#1D5A38", "#8A4B08"],
+                linewidth=1.2,
+            )
+            maximum = max(max(costs), 1.0)
+            ax.set_xlim(0, maximum * 1.18)
+            ax.set_xlabel("Coste de Mahalanobis eᵀΩe", fontsize=8)
+            ax.set_title(
+                "Mismo residuo, distinto peso estadístico",
+                fontsize=9.6,
+                fontweight="bold",
+                loc="left",
+            )
+            ax.tick_params(labelsize=7)
+            ax.grid(axis="x", alpha=0.20)
+
+            for bar, value in zip(bars, costs):
+                ax.text(
+                    value + maximum * 0.025,
+                    bar.get_y() + bar.get_height() / 2,
+                    f"{value:.4f}",
+                    fontsize=7.4,
+                    va="center",
+                    ha="left",
+                )
+
+            ax.text(
+                0.99,
+                0.08,
+                f"||e||₂ = {state.get('euclidean_distance', 0.0):.4f} en ambos casos",
+                transform=ax.transAxes,
+                fontsize=7.2,
+                ha="right",
+                va="bottom",
+                color="#444444",
+            )
+        else:
+            ax.axis("off")
+            ax.set_xlim(0, 1)
+            ax.set_ylim(0, 1)
+
+            labels = [
+                (0.04, "residuo e"),
+                (0.29, "covarianza Σ"),
+                (0.56, "información Ω"),
+                (0.81, "coste"),
+            ]
+
+            for x, label in labels:
+                width = 0.16
+                rectangle = Rectangle(
+                    (x, 0.34),
+                    width,
+                    0.30,
+                    facecolor="#F4F4F4",
+                    edgecolor="#666666",
+                    linewidth=1.3,
+                )
+                ax.add_patch(rectangle)
+                ax.text(
+                    x + width / 2,
+                    0.49,
+                    label,
+                    fontsize=8.0,
+                    fontweight="bold",
+                    ha="center",
+                    va="center",
+                )
+
+            for start, end in [(0.20, 0.29), (0.45, 0.56), (0.72, 0.81)]:
+                ax.add_patch(
+                    FancyArrowPatch(
+                        (start, 0.49),
+                        (end, 0.49),
+                        arrowstyle="-|>",
+                        mutation_scale=12,
+                        linewidth=1.4,
+                        color="#555555",
+                    )
+                )
+
+            ax.text(
+                0.50,
+                0.82,
+                "La geometría del error no basta: también importa la confianza",
+                fontsize=9.5,
+                fontweight="bold",
+                ha="center",
+                va="center",
+            )
+
+    def _dibujar_matrices_incertidumbre(self, ax, state):
+        """Muestra Σ, Ω, áreas y correlaciones de las dos mediciones."""
+
+        ax.clear()
+        ax.axis("off")
+        ax.set_xlim(0, 1)
+        ax.set_ylim(0, 1)
+
+        ax.text(
+            0.50,
+            0.975,
+            "Covarianza e información",
+            fontsize=10.7,
+            fontweight="bold",
+            ha="center",
+            va="top",
+        )
+
+        covariances = state.get("covariances", [[[0, 0], [0, 0]]] * 2)
+        informations = state.get("informations", [[[0, 0], [0, 0]]] * 2)
+        correlations = state.get("correlations", [0, 0])
+        areas = state.get("ellipse_areas", [0, 0])
+
+        show_covariances = state.get("show_covariances", False)
+        show_information = state.get("show_information", False)
+
+        rows = [
+            (
+                0.57,
+                "1 · fiable",
+                "#DDF1E5",
+                "#2E8B57",
+                covariances[0],
+                informations[0],
+                correlations[0],
+                areas[0],
+            ),
+            (
+                0.12,
+                "2 · poco fiable",
+                "#FCE6D4",
+                "#F28E2B",
+                covariances[1],
+                informations[1],
+                correlations[1],
+                areas[1],
+            ),
+        ]
+
+        for y, title, face, edge, covariance, information, rho, area in rows:
+            rectangle = Rectangle(
+                (0.05, y),
+                0.90,
+                0.35,
+                facecolor=face,
+                edgecolor=edge,
+                linewidth=1.5,
+            )
+            ax.add_patch(rectangle)
+            ax.text(
+                0.09,
+                y + 0.315,
+                title,
+                fontsize=8.7,
+                fontweight="bold",
+                ha="left",
+                va="top",
+            )
+
+            covariance_text = (
+                self._formatear_matriz_2d_incertidumbre(covariance)
+                if show_covariances
+                else "Σ = pendiente"
+            )
+            information_text = (
+                self._formatear_matriz_2d_incertidumbre(information)
+                if show_information
+                else "Ω = pendiente"
+            )
+
+            ax.text(
+                0.09,
+                y + 0.245,
+                "Σ = " + covariance_text,
+                fontsize=6.6,
+                family="monospace",
+                ha="left",
+                va="top",
+            )
+            ax.text(
+                0.09,
+                y + 0.135,
+                "Ω = " + information_text,
+                fontsize=6.6,
+                family="monospace",
+                ha="left",
+                va="top",
+            )
+            ax.text(
+                0.91,
+                y + 0.045,
+                f"ρ={rho:.3f} · área₂σ={area:.3f}",
+                fontsize=6.7,
+                ha="right",
+                va="bottom",
+                color="#444444",
+            )
+
+        ax.text(
+            0.50,
+            0.035,
+            "Σ pequeña ⇄ Ω grande",
+            fontsize=8.0,
+            fontweight="bold",
+            ha="center",
+            va="center",
+        )
+
+    def _dibujar_grafo_incertidumbre(self, ax, graph, state):
+        """Dibuja el grafo de factores con pesos derivados de Ω."""
+
+        ax.clear()
+        ax.axis("off")
+        ax.set_xlim(0, 1)
+        ax.set_ylim(0, 1)
+
+        ax.text(
+            0.50,
+            0.96,
+            "Grafo de factores",
+            fontsize=10.6,
+            fontweight="bold",
+            ha="center",
+            va="top",
+        )
+
+        if not state.get("show_factor_graph", False):
+            ax.text(
+                0.50,
+                0.50,
+                "Cada medición se convertirá\nen un factor ponderado",
+                fontsize=9.0,
+                ha="center",
+                va="center",
+                color="#666666",
+                bbox={
+                    "boxstyle": "round,pad=0.45",
+                    "fc": "white",
+                    "ec": "#AAAAAA",
+                },
+            )
+            return
+
+        positions = {
+            "p": (0.50, 0.72),
+            "f_fiable": (0.25, 0.29),
+            "f_poco_fiable": (0.75, 0.29),
+        }
+
+        information_traces = state.get("information_traces", [0, 0])
+        max_trace = max(max(information_traces), 1e-9)
+
+        edge_data = [
+            ("p", "f_fiable", information_traces[0], "#2E8B57"),
+            ("p", "f_poco_fiable", information_traces[1], "#F28E2B"),
+        ]
+
+        for origin, destination, trace_value, color in edge_data:
+            x1, y1 = positions[origin]
+            x2, y2 = positions[destination]
+            line_width = 1.4 + 4.2 * trace_value / max_trace
+            ax.plot(
+                [x1, x2],
+                [y1, y2],
+                color=color,
+                linewidth=line_width,
+                alpha=0.85,
+                zorder=8,
+            )
+            ax.text(
+                (x1 + x2) / 2,
+                (y1 + y2) / 2 + 0.03,
+                f"tr(Ω)={trace_value:.2f}",
+                fontsize=6.7,
+                ha="center",
+                va="bottom",
+                bbox={
+                    "boxstyle": "round,pad=0.15",
+                    "fc": "white",
+                    "ec": "none",
+                    "alpha": 0.93,
+                },
+            )
+
+        ax.scatter(
+            [positions["p"][0]],
+            [positions["p"][1]],
+            s=430,
+            marker="o",
+            color="#4C9ED9",
+            edgecolors="#1F4F73",
+            linewidths=1.7,
+            zorder=20,
+        )
+        ax.text(
+            positions["p"][0],
+            positions["p"][1],
+            "p",
+            fontsize=10,
+            fontweight="bold",
+            ha="center",
+            va="center",
+            zorder=25,
+        )
+        ax.text(
+            positions["p"][0],
+            positions["p"][1] + 0.12,
+            "variable 2D",
+            fontsize=7,
+            ha="center",
+            va="bottom",
+        )
+
+        factor_specs = [
+            ("f_fiable", "f₁\nfiable", "#B7E4C7", "#2E8B57"),
+            (
+                "f_poco_fiable",
+                "f₂\npoco fiable",
+                "#F8D7B5",
+                "#F28E2B",
+            ),
+        ]
+
+        for node, label, face, edge in factor_specs:
+            x, y = positions[node]
+            rectangle = Rectangle(
+                (x - 0.13, y - 0.09),
+                0.26,
+                0.18,
+                facecolor=face,
+                edgecolor=edge,
+                linewidth=1.6,
+                zorder=18,
+            )
+            ax.add_patch(rectangle)
+            ax.text(
+                x,
+                y,
+                label,
+                fontsize=7.7,
+                fontweight="bold",
+                ha="center",
+                va="center",
+                zorder=22,
+            )
+
+        ax.text(
+            0.50,
+            0.075,
+            "F(p) = Σ eₖᵀ Ωₖ eₖ",
+            fontsize=8.5,
+            fontweight="bold",
+            ha="center",
+            va="center",
+        )
+
+    def _dibujar_flujo_incertidumbre(self, ax, state):
+        """Dibuja el flujo conceptual y la conexión con sensores."""
+
+        ax.clear()
+        ax.axis("off")
+        ax.set_xlim(0, 1)
+        ax.set_ylim(0, 1)
+
+        boxes = [
+            (0.02, 0.16, "sensor"),
+            (0.22, 0.17, "z, Σ"),
+            (0.43, 0.17, "Ω=Σ⁻¹"),
+            (0.65, 0.16, "eᵀΩe"),
+            (0.85, 0.13, "SLAM"),
+        ]
+
+        for x, width, label in boxes:
+            rectangle = Rectangle(
+                (x, 0.37),
+                width,
+                0.30,
+                facecolor="#F4F4F4",
+                edgecolor="#666666",
+                linewidth=1.25,
+            )
+            ax.add_patch(rectangle)
+            ax.text(
+                x + width / 2,
+                0.52,
+                label,
+                fontsize=7.5,
+                fontweight="bold",
+                ha="center",
+                va="center",
+            )
+
+        for start, end in [(0.18, 0.22), (0.39, 0.43), (0.60, 0.65), (0.81, 0.85)]:
+            ax.add_patch(
+                FancyArrowPatch(
+                    (start, 0.52),
+                    (end, 0.52),
+                    arrowstyle="-|>",
+                    mutation_scale=11,
+                    linewidth=1.3,
+                    color="#555555",
+                )
+            )
+
+        if state.get("show_sensor_connection", False):
+            ax.text(
+                0.50,
+                0.17,
+                "odometría · LiDAR · cámara · IMU",
+                fontsize=7.2,
+                fontweight="bold",
+                ha="center",
+                va="center",
+                color="#1F4F73",
+            )
+        else:
+            ax.text(
+                0.50,
+                0.17,
+                "cada sensor necesita su propio modelo de incertidumbre",
+                fontsize=7.0,
+                ha="center",
+                va="center",
+                color="#555555",
+            )
+
+        ax.text(
+            0.50,
+            0.86,
+            "De la medición al peso de una arista",
+            fontsize=9.3,
+            fontweight="bold",
+            ha="center",
+            va="center",
+        )
+
+    def _dibujar_estado_incertidumbre(
+        self,
+        info_ax,
+        geometry_ax,
+        comparison_ax,
+        matrices_ax,
+        graph_ax,
+        flow_ax,
+        graph,
+        state,
+    ):
+        """Dibuja un fotograma completo del apartado 5.4."""
+
+        self._dibujar_panel_incertidumbre(info_ax, state)
+        self._dibujar_geometria_incertidumbre(geometry_ax, state)
+        self._dibujar_comparacion_incertidumbre(comparison_ax, state)
+        self._dibujar_matrices_incertidumbre(matrices_ax, state)
+        self._dibujar_grafo_incertidumbre(graph_ax, graph, state)
+        self._dibujar_flujo_incertidumbre(flow_ax, state)
+
+    def animate_uncertainty_information(
+        self,
+        graph,
+        states,
+        title="Incertidumbre, covarianza y matriz de información",
+        final_image_path=None,
+        repeat=False,
+    ):
+        """
+        Anima dos mediciones con distinta incertidumbre.
+
+        La imagen final muestra:
+        - puntos y elipses de incertidumbre;
+        - covarianzas y matrices de información;
+        - el mismo residuo con costes de Mahalanobis distintos;
+        - fusión no ponderada y ponderada;
+        - grafo de factores y conexión con sensores de SLAM.
+        """
+
+        if not states:
+            raise ValueError(
+                "La lista de estados de incertidumbre no puede estar vacía."
+            )
+
+        if graph.is_directed():
+            raise ValueError("El grafo de incertidumbre debe ser no dirigido.")
+
+        required_nodes = {"p", "f_fiable", "f_poco_fiable"}
+
+        if not required_nodes.issubset(graph.nodes()):
+            raise ValueError(
+                "El grafo debe contener p y los dos factores de medición."
+            )
+
+        (
+            fig,
+            info_ax,
+            geometry_ax,
+            comparison_ax,
+            matrices_ax,
+            graph_ax,
+            flow_ax,
+        ) = self._preparar_figura_incertidumbre(title)
+
+        if final_image_path is not None:
+            self._dibujar_estado_incertidumbre(
+                info_ax=info_ax,
+                geometry_ax=geometry_ax,
+                comparison_ax=comparison_ax,
+                matrices_ax=matrices_ax,
+                graph_ax=graph_ax,
+                flow_ax=flow_ax,
+                graph=graph,
+                state=states[-1],
+            )
+
+            final_image_path = Path(final_image_path)
+            final_image_path.parent.mkdir(parents=True, exist_ok=True)
+            fig.savefig(final_image_path, dpi=200, bbox_inches="tight")
+            print(f"Imagen final guardada en: {final_image_path}")
+
+        def init():
+            self._dibujar_estado_incertidumbre(
+                info_ax=info_ax,
+                geometry_ax=geometry_ax,
+                comparison_ax=comparison_ax,
+                matrices_ax=matrices_ax,
+                graph_ax=graph_ax,
+                flow_ax=flow_ax,
+                graph=graph,
+                state=states[0],
+            )
+            return []
+
+        def update(frame_index):
+            self._dibujar_estado_incertidumbre(
+                info_ax=info_ax,
+                geometry_ax=geometry_ax,
+                comparison_ax=comparison_ax,
+                matrices_ax=matrices_ax,
+                graph_ax=graph_ax,
+                flow_ax=flow_ax,
                 graph=graph,
                 state=states[frame_index],
             )
