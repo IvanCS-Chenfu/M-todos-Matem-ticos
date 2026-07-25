@@ -1,7 +1,9 @@
+from math import pi, sqrt
 from pathlib import Path
 
 import matplotlib.pyplot as plt
 import networkx as nx
+from matplotlib.lines import Line2D
 from matplotlib.patches import FancyArrowPatch, Rectangle
 
 
@@ -17,15 +19,28 @@ class GraphVisualizer:
     - visualización de estructuras grandes destacando ciclos, caminos,
       árboles, bosque, conectividad, etc.,
     - visualización de distintas representaciones computacionales
-      de un mismo grafo.
+      de un mismo grafo,
+    - comparación semántica de varios usos de los grafos en robótica.
     """
 
     def __init__(self, figsize=(8, 5)):
         self.figsize = figsize
 
-    def _set_centered_limits(self, ax, pos, margin=0.35):
+    def _set_centered_limits(
+        self,
+        ax,
+        pos,
+        margin=0.35,
+        margin_x=None,
+        margin_y=None,
+        equal_aspect=True,
+    ):
         """
         Centra el grafo dentro de la figura.
+
+        Cuando ``equal_aspect`` es False, el área útil puede adoptar forma
+        rectangular. Esto es útil en paneles comparativos donde interesa dar
+        más anchura al grafo sin aumentar su altura.
         """
 
         xs = [coord[0] for coord in pos.values()]
@@ -45,21 +60,38 @@ class GraphVisualizer:
         center_x = (min_x + max_x) / 2
         center_y = (min_y + max_y) / 2
 
-        max_range = max(width, height)
+        if equal_aspect:
+            max_range = max(width, height)
+            half_range = max_range / 2
+            half_range_with_margin = half_range * (1 + margin)
 
-        half_range = max_range / 2
-        half_range_with_margin = half_range * (1 + margin)
+            ax.set_xlim(
+                center_x - half_range_with_margin,
+                center_x + half_range_with_margin,
+            )
+            ax.set_ylim(
+                center_y - half_range_with_margin,
+                center_y + half_range_with_margin,
+            )
+            ax.set_aspect("equal", adjustable="box")
+        else:
+            if margin_x is None:
+                margin_x = margin
+            if margin_y is None:
+                margin_y = margin
 
-        ax.set_xlim(
-            center_x - half_range_with_margin,
-            center_x + half_range_with_margin,
-        )
-        ax.set_ylim(
-            center_y - half_range_with_margin,
-            center_y + half_range_with_margin,
-        )
+            half_width = (width / 2) * (1 + margin_x)
+            half_height = (height / 2) * (1 + margin_y)
 
-        ax.set_aspect("equal", adjustable="box")
+            ax.set_xlim(
+                center_x - half_width,
+                center_x + half_width,
+            )
+            ax.set_ylim(
+                center_y - half_height,
+                center_y + half_height,
+            )
+            ax.set_aspect("auto")
 
     def _draw_manual_node_labels(self, ax, graph, pos, font_size=9):
         """
@@ -923,3 +955,566 @@ class GraphVisualizer:
             print(f"Imagen guardada en: {save_path}")
 
         plt.show()
+
+    # ------------------------------------------------------------------
+    # Comparación de grafos aplicados a robótica
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _get_mapping_value(mapping, u, v, default=None):
+        """
+        Recupera un valor asociado a una arista.
+
+        En grafos no dirigidos también comprueba la clave invertida.
+        """
+
+        if not mapping:
+            return default
+
+        if (u, v) in mapping:
+            return mapping[(u, v)]
+
+        if (v, u) in mapping:
+            return mapping[(v, u)]
+
+        return default
+
+    @staticmethod
+    def _scale_positions(
+        pos,
+        scale=1.0,
+        scale_x=None,
+        scale_y=None,
+    ):
+        """
+        Escala un conjunto de posiciones respecto a su centro.
+
+        Se usa para abrir un poco más los vértices dentro de cada panel sin
+        cambiar el tamaño de los círculos. Así el grafo ocupa una fracción
+        mayor del cuadro y se reducen los solapamientos visuales.
+        """
+
+        if not pos:
+            return pos
+
+        scale_x = scale if scale_x is None else scale_x
+        scale_y = scale if scale_y is None else scale_y
+
+        xs = [coord[0] for coord in pos.values()]
+        ys = [coord[1] for coord in pos.values()]
+        center_x = (min(xs) + max(xs)) / 2
+        center_y = (min(ys) + max(ys)) / 2
+
+        return {
+            node: (
+                center_x + (x - center_x) * scale_x,
+                center_y + (y - center_y) * scale_y,
+            )
+            for node, (x, y) in pos.items()
+        }
+
+    @staticmethod
+    def _estimate_semantic_node_size(
+        label,
+        font_size=8.2,
+        minimum_size=1850,
+        padding_points=17,
+    ):
+        """
+        Estima un tamaño circular suficiente para contener una etiqueta.
+
+        ``node_size`` en NetworkX representa un área en puntos cuadrados.
+        La estimación usa la línea más larga, el número de líneas y un
+        relleno adicional para evitar que el texto toque el borde.
+        """
+
+        lines = str(label).splitlines() or [""]
+        max_characters = max(len(line) for line in lines)
+        number_of_lines = len(lines)
+
+        estimated_text_width = max_characters * font_size * 0.62
+        estimated_text_height = number_of_lines * font_size * 1.18
+
+        required_diameter = max(
+            estimated_text_width + padding_points,
+            estimated_text_height + padding_points,
+            48.0,
+        )
+
+        estimated_area = pi * (required_diameter / 2.0) ** 2
+        return max(float(minimum_size), estimated_area)
+
+    def _draw_semantic_edge_label(
+        self,
+        ax,
+        pos,
+        u,
+        v,
+        label,
+        offset=(0.0, 0.0),
+        font_size=7,
+    ):
+        """
+        Dibuja una etiqueta semántica sobre una arista.
+
+        El desplazamiento permite evitar solapamientos. El recuadro se deja
+        ligeramente translúcido y compacto para que la arista siga siendo
+        visible alrededor del texto.
+        """
+
+        if label is None or str(label).strip() == "":
+            return
+
+        x1, y1 = pos[u]
+        x2, y2 = pos[v]
+
+        middle_x = (x1 + x2) / 2 + offset[0]
+        middle_y = (y1 + y2) / 2 + offset[1]
+
+        ax.text(
+            middle_x,
+            middle_y,
+            str(label),
+            fontsize=font_size,
+            ha="center",
+            va="center",
+            zorder=45,
+            bbox={
+                "boxstyle": "round,pad=0.15",
+                "fc": "white",
+                "ec": "#B0B0B0",
+                "linewidth": 0.65,
+                "alpha": 0.90,
+            },
+        )
+
+    def _draw_robotics_graph_on_axis(
+        self,
+        ax,
+        example,
+        layout_seed=7,
+    ):
+        """
+        Dibuja un ejemplo robótico dentro de un panel.
+
+        Cada ejemplo puede definir:
+
+        {
+            "graph": grafo,
+            "title": título,
+            "subtitle": subtítulo,
+            "description": texto inferior,
+            "pos": posiciones,
+            "node_labels": etiquetas de vértices,
+            "edge_labels": etiquetas semánticas,
+            "edge_label_offsets": desplazamientos,
+            "edge_rads": curvaturas,
+            "highlight_nodes": vértices destacados,
+            "highlight_edges": aristas destacadas,
+            "node_size": tamaño circular mínimo,
+            "node_font_size": tamaño del texto de los vértices
+        }
+        """
+
+        graph = example["graph"]
+        title = example["title"]
+        subtitle = example.get("subtitle", "")
+        description = example.get("description", "")
+        pos = example.get("pos")
+
+        if pos is None:
+            pos = nx.spring_layout(
+                graph,
+                seed=layout_seed,
+                k=2.0,
+            )
+
+        pos = self._scale_positions(
+            pos,
+            scale=example.get("spread_factor", 1.16),
+            scale_x=example.get("spread_factor_x"),
+            scale_y=example.get("spread_factor_y"),
+        )
+
+        node_labels = example.get(
+            "node_labels",
+            {
+                node: graph.nodes[node].get("label", str(node))
+                for node in graph.nodes()
+            },
+        )
+        edge_labels = example.get("edge_labels", {})
+        edge_label_offsets = example.get("edge_label_offsets", {})
+        edge_rads = example.get("edge_rads", {})
+        highlight_nodes = set(example.get("highlight_nodes", []))
+        highlight_edges = {
+            tuple(edge)
+            for edge in example.get("highlight_edges", [])
+        }
+
+        node_font_size = example.get("node_font_size", 8.2)
+        minimum_node_size = example.get("node_size", 1850)
+
+        node_sizes = {
+            node: self._estimate_semantic_node_size(
+                label=node_labels.get(node, node),
+                font_size=node_font_size,
+                minimum_size=minimum_node_size,
+                padding_points=example.get("node_padding_points", 17),
+            )
+            for node in graph.nodes()
+        }
+
+        # FancyArrowPatch recibe el recorte en puntos. Lo adaptamos al radio
+        # real de cada círculo para que las flechas no entren en los vértices.
+        node_shrinks = {
+            node: max(22.0, sqrt(size / pi) * 0.96)
+            for node, size in node_sizes.items()
+        }
+
+        # Paleta semántica fija para que el significado sea el mismo en
+        # todos los paneles y pueda explicarse mediante una única leyenda.
+        normal_node_color = "#2E86C1"
+        highlighted_node_color = "#F39C12"
+        normal_edge_color = "#7F7F7F"
+        highlighted_edge_color = "#D62728"
+
+        ax.clear()
+        ax.axis("off")
+        ax.set_title(
+            title,
+            fontsize=12.2,
+            fontweight="bold",
+            pad=16,
+        )
+
+        if subtitle:
+            ax.text(
+                0.5,
+                1.012,
+                subtitle,
+                transform=ax.transAxes,
+                fontsize=8.5,
+                ha="center",
+                va="bottom",
+            )
+
+        directed = graph.is_directed()
+
+        for u, v in graph.edges():
+            x1, y1 = pos[u]
+            x2, y2 = pos[v]
+
+            is_highlighted = (
+                (u, v) in highlight_edges
+                or (
+                    not directed
+                    and (v, u) in highlight_edges
+                )
+            )
+
+            edge_color = (
+                highlighted_edge_color
+                if is_highlighted
+                else normal_edge_color
+            )
+            line_width = 3.8 if is_highlighted else 2.35
+            rad = self._get_mapping_value(
+                edge_rads,
+                u,
+                v,
+                default=0.0,
+            )
+
+            edge_artist = FancyArrowPatch(
+                (x1, y1),
+                (x2, y2),
+                arrowstyle="-|>" if directed else "-",
+                mutation_scale=18 if directed else 1,
+                linewidth=line_width,
+                color=edge_color,
+                shrinkA=node_shrinks[u],
+                shrinkB=node_shrinks[v],
+                connectionstyle=f"arc3,rad={rad}",
+                zorder=12 if directed else 10,
+            )
+            ax.add_patch(edge_artist)
+
+            label = self._get_mapping_value(
+                edge_labels,
+                u,
+                v,
+                default=graph.edges[u, v].get("label"),
+            )
+            label_offset = self._get_mapping_value(
+                edge_label_offsets,
+                u,
+                v,
+                default=(0.0, 0.0),
+            )
+
+            self._draw_semantic_edge_label(
+                ax=ax,
+                pos=pos,
+                u=u,
+                v=v,
+                label=label,
+                offset=label_offset,
+                font_size=example.get("edge_font_size", 7.0),
+            )
+
+        regular_nodes = [
+            node
+            for node in graph.nodes()
+            if node not in highlight_nodes
+        ]
+
+        if regular_nodes:
+            regular_collection = nx.draw_networkx_nodes(
+                graph,
+                pos,
+                nodelist=regular_nodes,
+                node_size=[node_sizes[node] for node in regular_nodes],
+                node_color=normal_node_color,
+                edgecolors="black",
+                linewidths=1.25,
+                ax=ax,
+            )
+            regular_collection.set_zorder(20)
+
+        if highlight_nodes:
+            highlighted_nodes = sorted(highlight_nodes)
+            highlighted_collection = nx.draw_networkx_nodes(
+                graph,
+                pos,
+                nodelist=highlighted_nodes,
+                node_size=[
+                    node_sizes[node] * 1.08
+                    for node in highlighted_nodes
+                ],
+                node_color=highlighted_node_color,
+                edgecolors="black",
+                linewidths=2.0,
+                ax=ax,
+            )
+            highlighted_collection.set_zorder(22)
+
+        for node, (x, y) in pos.items():
+            ax.text(
+                x,
+                y,
+                str(node_labels.get(node, node)),
+                fontsize=node_font_size,
+                fontweight="bold",
+                ha="center",
+                va="center",
+                multialignment="center",
+                linespacing=1.0,
+                color="black",
+                zorder=35,
+            )
+
+        self._set_centered_limits(
+            ax,
+            pos,
+            margin=example.get("margin", 0.44),
+            margin_x=example.get("margin_x", 0.38),
+            margin_y=example.get("margin_y", 0.52),
+            equal_aspect=False,
+        )
+
+        if description:
+            ax.text(
+                0.5,
+                0.015,
+                description,
+                transform=ax.transAxes,
+                fontsize=7.9,
+                ha="center",
+                va="bottom",
+                linespacing=1.32,
+                zorder=60,
+                bbox={
+                    "boxstyle": "round,pad=0.34",
+                    "fc": "white",
+                    "ec": "#999999",
+                    "alpha": 0.97,
+                },
+            )
+
+        panel_border = Rectangle(
+            (0.006, 0.006),
+            0.988,
+            0.988,
+            transform=ax.transAxes,
+            fill=False,
+            linewidth=1.0,
+            edgecolor="#BBBBBB",
+            zorder=70,
+        )
+        ax.add_patch(panel_border)
+
+    def show_robotics_graph_collection(
+        self,
+        graph_examples,
+        title="Un mismo concepto, distintos grafos en robótica",
+        subtitle=(
+            "Los vértices y las aristas cambian de significado "
+            "según el problema representado"
+        ),
+        save_path=None,
+        rows=2,
+        cols=3,
+        layout_seed=7,
+    ):
+        """
+        Compara varios usos de los grafos en robótica.
+
+        La figura mantiene la posición estable de cada ejemplo y muestra:
+        - nombres semánticos en los vértices,
+        - significado de las aristas,
+        - dirección cuando procede,
+        - una descripción breve del modelo y del algoritmo relacionado.
+        """
+
+        capacity = rows * cols
+
+        if len(graph_examples) > capacity:
+            raise ValueError(
+                "Hay más ejemplos que paneles disponibles."
+            )
+
+        fig, axes = plt.subplots(
+            rows,
+            cols,
+            figsize=self.figsize,
+        )
+
+        fig.suptitle(
+            title,
+            fontsize=18,
+            fontweight="bold",
+            y=0.989,
+        )
+
+        fig.text(
+            0.5,
+            0.958,
+            subtitle,
+            fontsize=11,
+            ha="center",
+            va="top",
+        )
+
+        legend_handles = [
+            Line2D(
+                [0],
+                [0],
+                marker="o",
+                linestyle="none",
+                markerfacecolor="#2E86C1",
+                markeredgecolor="black",
+                markersize=9,
+                label="Vértice normal",
+            ),
+            Line2D(
+                [0],
+                [0],
+                marker="o",
+                linestyle="none",
+                markerfacecolor="#F39C12",
+                markeredgecolor="black",
+                markersize=9,
+                label="Vértice destacado: inicio, objetivo o nodo clave",
+            ),
+            Line2D(
+                [0],
+                [0],
+                color="#7F7F7F",
+                linewidth=2.3,
+                label="Arista normal",
+            ),
+            Line2D(
+                [0],
+                [0],
+                color="#D62728",
+                linewidth=3.4,
+                label="Ruta o restricción destacada",
+            ),
+        ]
+
+        fig.legend(
+            handles=legend_handles,
+            loc="upper center",
+            bbox_to_anchor=(0.5, 0.929),
+            ncol=4,
+            fontsize=8.6,
+            frameon=True,
+            framealpha=0.96,
+            edgecolor="#AAAAAA",
+            columnspacing=1.8,
+            handlelength=2.4,
+        )
+
+        if hasattr(axes, "flatten"):
+            axes = axes.flatten()
+        else:
+            axes = [axes]
+
+        for index, example in enumerate(graph_examples):
+            self._draw_robotics_graph_on_axis(
+                ax=axes[index],
+                example=example,
+                layout_seed=layout_seed,
+            )
+
+        for empty_index in range(len(graph_examples), len(axes)):
+            axes[empty_index].axis("off")
+
+        fig.text(
+            0.5,
+            0.018,
+            (
+                "Misma estructura matemática: vértices + aristas. "
+                "Distinto significado robótico según el modelo."
+            ),
+            fontsize=10.2,
+            fontweight="bold",
+            ha="center",
+            va="bottom",
+            bbox={
+                "boxstyle": "round,pad=0.34",
+                "fc": "white",
+                "ec": "#888888",
+                "alpha": 0.98,
+            },
+        )
+
+        # Se reserva más espacio para el encabezado general y se amplía el
+        # área útil de cada panel. Con una figura 22 x 14.5, los seis marcos
+        # quedan notablemente mayores que en la versión anterior.
+        fig.subplots_adjust(
+            left=0.020,
+            right=0.992,
+            top=0.865,
+            bottom=0.070,
+            wspace=0.055,
+            hspace=0.205,
+        )
+
+        if save_path is not None:
+            save_path = Path(save_path)
+            save_path.parent.mkdir(
+                parents=True,
+                exist_ok=True,
+            )
+            fig.savefig(
+                save_path,
+                dpi=200,
+                bbox_inches="tight",
+            )
+            print(f"Imagen guardada en: {save_path}")
+
+        plt.show()
+
+        return fig
