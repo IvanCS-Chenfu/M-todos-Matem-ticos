@@ -20,6 +20,7 @@ class GraphAnimator:
     - navegación en grid con A* y replanificación dinámica,
     - planificación y ejecución de tareas robóticas,
     - restricciones relativas entre poses y transición a Graph SLAM,
+    - variables, mediciones, predicciones y errores en SE(2),
     - caminos mínimos con Bellman-Ford,
     - caminos mínimos con Floyd-Warshall,
     - árboles de expansión mínima con Prim y Kruskal,
@@ -13195,6 +13196,810 @@ class GraphAnimator:
             self._dibujar_estado_restriccion_pose(
                 geometry_ax=geometry_ax,
                 graph_ax=graph_ax,
+                info_ax=info_ax,
+                calculation_ax=calculation_ax,
+                graph=graph,
+                state=states[frame_index],
+            )
+            return []
+
+        self.animation = FuncAnimation(
+            fig,
+            update,
+            frames=len(states),
+            init_func=init,
+            interval=self.interval,
+            repeat=repeat,
+            blit=False,
+        )
+
+        plt.show()
+        return self.animation
+    # ------------------------------------------------------------------
+    # Variables, medición, predicción y error en SE(2)
+    # ------------------------------------------------------------------
+
+    def _preparar_figura_medicion_prediccion(self, title):
+        """Crea cuatro zonas comparables con el apartado anterior."""
+
+        fig = plt.figure(figsize=self.figsize)
+
+        grid = fig.add_gridspec(
+            2,
+            3,
+            width_ratios=[1.70, 4.15, 2.45],
+            height_ratios=[4.75, 1.75],
+            wspace=0.09,
+            hspace=0.12,
+        )
+
+        info_ax = fig.add_subplot(grid[:, 0])
+        geometry_ax = fig.add_subplot(grid[0, 1])
+        flow_ax = fig.add_subplot(grid[0, 2])
+        calculation_ax = fig.add_subplot(grid[1, 1:])
+
+        fig.suptitle(title, fontsize=16, fontweight="bold")
+        fig.subplots_adjust(
+            left=0.025,
+            right=0.985,
+            top=0.925,
+            bottom=0.045,
+        )
+
+        return fig, geometry_ax, flow_ax, info_ax, calculation_ax
+
+    @staticmethod
+    def _titulo_fase_medicion_prediccion(phase):
+        """Traduce la fase del guion a una etiqueta breve."""
+
+        titles = {
+            "variables": "1. Variables estimadas",
+            "estimate_vs_truth": "2. Estimación y estado real",
+            "measurement": "3. Medición del sensor",
+            "local_frame": "4. Sistema local de x0",
+            "expected_pose": "5. Pose esperada",
+            "model": "6. Modelo de medición",
+            "prediction": "7. Predicción",
+            "comparison": "8. Medición frente a predicción",
+            "translation_error": "9. Error de traslación",
+            "angular_error": "10. Error angular",
+            "angle_wrap": "11. Normalización angular",
+            "residual": "12. Residuo en SE(2)",
+            "uncertainty": "13. Incertidumbre",
+            "cost": "14. Información y coste",
+            "estimation_experiment": "15. Varias estimaciones",
+            "correction": "16. Cambio de la variable x1",
+            "compatible": "17. Medición compatible",
+            "future_graph": "18. Muchas restricciones",
+            "summary": "19. Idea final",
+        }
+        return titles.get(phase, str(phase))
+
+    def _dibujar_leyenda_medicion_prediccion(self, ax):
+        """Dibuja la leyenda semántica del ejemplo."""
+
+        elements = [
+            Line2D(
+                [0], [0], marker="o", color="none",
+                markerfacecolor="#4C9ED9", markeredgecolor="#1F4F73",
+                markersize=8, label="Variable x0 fija",
+            ),
+            Line2D(
+                [0], [0], marker="o", color="none",
+                markerfacecolor="#F28E2B", markeredgecolor="#8A4B08",
+                markersize=8, label="Variable x1 estimada",
+            ),
+            Line2D(
+                [0], [0], color="#2E8B57", linewidth=3,
+                label="Medición fija z01",
+            ),
+            Line2D(
+                [0], [0], color="#8E5EA2", linewidth=3,
+                label="Predicción z_hat01",
+            ),
+            Line2D(
+                [0], [0], color="#D62728", linewidth=3,
+                label="Error / residuo",
+            ),
+            Line2D(
+                [0], [0], color="#777777", linewidth=2,
+                linestyle="dashed", label="Estimación inicial",
+            ),
+        ]
+
+        ax.legend(
+            handles=elements,
+            loc="lower center",
+            bbox_to_anchor=(0.5, 0.035),
+            fontsize=6.8,
+            framealpha=0.97,
+            ncol=1,
+            handlelength=2.4,
+            borderpad=0.55,
+            labelspacing=0.58,
+        )
+
+    def _dibujar_panel_info_medicion_prediccion(self, ax, state):
+        """Explica qué magnitudes son fijas y cuáles dependen del estado."""
+
+        ax.clear()
+        ax.axis("off")
+        ax.set_xlim(0, 1)
+        ax.set_ylim(0, 1)
+
+        ax.text(
+            0.50,
+            0.985,
+            self._titulo_fase_medicion_prediccion(state.get("phase")),
+            fontsize=11.4,
+            fontweight="bold",
+            ha="center",
+            va="top",
+        )
+
+        ax.text(
+            0.50,
+            0.925,
+            f"Estado {state.get('step', 0)} de {state.get('total_steps', 0)}",
+            fontsize=7.5,
+            ha="center",
+            va="top",
+            color="#555555",
+        )
+
+        ax.text(
+            0.50,
+            0.825,
+            state.get("message", ""),
+            fontsize=8.2,
+            fontweight="bold",
+            ha="center",
+            va="top",
+            wrap=True,
+            linespacing=1.45,
+            bbox={
+                "boxstyle": "round,pad=0.48",
+                "fc": "white",
+                "ec": "#777777",
+                "alpha": 0.98,
+            },
+        )
+
+        fixed_box = Rectangle(
+            (0.09, 0.585), 0.82, 0.105,
+            facecolor="#D5E8D4", edgecolor="#2E8B57", linewidth=1.5,
+        )
+        ax.add_patch(fixed_box)
+        ax.text(
+            0.50, 0.638,
+            "FIJO: z01, Σ01 y Ω01\n(datos registrados por el sensor)",
+            fontsize=7.2, fontweight="bold", ha="center", va="center",
+            color="#245B3A",
+        )
+
+        dynamic_box = Rectangle(
+            (0.09, 0.445), 0.82, 0.105,
+            facecolor="#E8D7F1", edgecolor="#8E5EA2", linewidth=1.5,
+        )
+        ax.add_patch(dynamic_box)
+        ax.text(
+            0.50, 0.498,
+            "CAMBIA CON x1: z_hat01, e01 y E01\n(valores calculados por el modelo)",
+            fontsize=7.2, fontweight="bold", ha="center", va="center",
+            color="#5A316B",
+        )
+
+        experiment_label = state.get("experiment_label")
+        if experiment_label:
+            ax.text(
+                0.50,
+                0.390,
+                experiment_label,
+                fontsize=7.4,
+                fontweight="bold",
+                ha="center",
+                va="center",
+                color="#8A4B08",
+                bbox={
+                    "boxstyle": "round,pad=0.25",
+                    "fc": "#FBE5A6",
+                    "ec": "#8A6D1D",
+                },
+            )
+
+        if state.get("show_angle_wrap", False):
+            ax.text(
+                0.50,
+                0.305,
+                "179° - (-179°) = 358°\nwrap(358°) = -2°",
+                fontsize=7.5,
+                family="monospace",
+                fontweight="bold",
+                ha="center",
+                va="center",
+                color="#7A1D1D",
+                bbox={
+                    "boxstyle": "round,pad=0.35",
+                    "fc": "#F7C6C7",
+                    "ec": "#C62828",
+                },
+            )
+        else:
+            ax.text(
+                0.50,
+                0.305,
+                "z01 = sensor\nz_hat01 = h(x0, x1)\ne01 = z01^-1 ⊕ z_hat01",
+                fontsize=7.2,
+                family="monospace",
+                ha="center",
+                va="center",
+                linespacing=1.45,
+                color="#333333",
+            )
+
+        self._dibujar_leyenda_medicion_prediccion(ax)
+
+    def _dibujar_geometria_medicion_prediccion(self, ax, state):
+        """Dibuja variables, medición, predicción y discrepancia geométrica."""
+
+        ax.clear()
+        ax.set_aspect("equal", adjustable="box")
+        ax.set_xlim(0.20, 5.20)
+        ax.set_ylim(0.20, 4.15)
+        ax.grid(True, linewidth=0.55, alpha=0.22)
+        ax.set_xlabel("x global [m]", fontsize=8)
+        ax.set_ylabel("y global [m]", fontsize=8)
+        ax.tick_params(labelsize=7)
+        ax.set_title("Interpretación geométrica", fontsize=11.0, fontweight="bold")
+
+        if not state.get("show_geometry", False):
+            ax.text(
+                0.50, 0.50,
+                "Las variables se representarán como poses en el plano.",
+                transform=ax.transAxes, fontsize=10, fontweight="bold",
+                ha="center", va="center", color="#555555",
+            )
+            return
+
+        pose_x0 = state["pose_x0"]
+        pose_x1 = state["pose_x1"]
+        initial_pose = state["pose_x1_initial"]
+        expected_pose = state["pose_x1_expected"]
+
+        if state.get("show_uncertainty", False):
+            self._dibujar_elipse_incertidumbre_restriccion(
+                ax=ax,
+                expected_pose=expected_pose,
+                sigmas=state["sigmas"],
+            )
+
+        if state.get("show_initial_history", False):
+            self._dibujar_pose_restriccion(
+                ax=ax,
+                pose=initial_pose,
+                label="x1 inicial",
+                face_color="white",
+                edge_color="#777777",
+                alpha=0.72,
+                zorder=15,
+                radius=0.09,
+                label_offset=(0.02, 0.30),
+                line_style="dashed",
+            )
+            self._dibujar_flecha_transformacion_restriccion(
+                ax=ax,
+                start_pose=pose_x0,
+                end_pose=initial_pose,
+                color="#777777",
+                label="z_hat inicial",
+                curvature=0.09,
+                line_width=1.8,
+                line_style="dashed",
+                label_offset=(0.0, 0.20),
+                alpha=0.62,
+                zorder=11,
+            )
+
+        if state.get("show_measurement", False):
+            self._dibujar_flecha_transformacion_restriccion(
+                ax=ax,
+                start_pose=pose_x0,
+                end_pose=expected_pose,
+                color="#2E8B57",
+                label="medición z01",
+                curvature=-0.055,
+                line_width=3.2,
+                label_offset=(-0.02, -0.17),
+                zorder=19,
+            )
+
+        if state.get("show_prediction", False):
+            self._dibujar_flecha_transformacion_restriccion(
+                ax=ax,
+                start_pose=pose_x0,
+                end_pose=pose_x1,
+                color="#8E5EA2",
+                label="predicción z_hat01",
+                curvature=0.055,
+                line_width=3.0,
+                label_offset=(0.02, 0.19),
+                zorder=20,
+            )
+
+        if state.get("show_expected", False):
+            self._dibujar_pose_restriccion(
+                ax=ax,
+                pose=expected_pose,
+                label="x1* esperada",
+                face_color="white",
+                edge_color="#2E8B57",
+                alpha=0.95,
+                zorder=24,
+                radius=0.10,
+                label_offset=(-0.05, -0.32),
+                line_style="dashed",
+            )
+
+        if state.get("show_x0", False):
+            self._dibujar_pose_restriccion(
+                ax=ax,
+                pose=pose_x0,
+                label="x0 variable fija",
+                face_color="#B7D7F0",
+                edge_color="#1F4F73",
+                zorder=30,
+                radius=0.11,
+                label_offset=(0.0, -0.32),
+            )
+
+        if state.get("show_x1", False):
+            self._dibujar_pose_restriccion(
+                ax=ax,
+                pose=pose_x1,
+                label="x1 estimada",
+                face_color="#FBE5A6",
+                edge_color="#8A4B08",
+                zorder=31,
+                radius=0.11,
+                label_offset=(0.05, 0.32),
+            )
+
+        if state.get("show_translation_error", False):
+            dx = pose_x1[0] - expected_pose[0]
+            dy = pose_x1[1] - expected_pose[1]
+            distance = (dx * dx + dy * dy) ** 0.5
+
+            if distance > 1e-8:
+                error_arrow = FancyArrowPatch(
+                    (expected_pose[0], expected_pose[1]),
+                    (pose_x1[0], pose_x1[1]),
+                    arrowstyle="-|>", mutation_scale=15,
+                    linewidth=3.0, color="#D62728",
+                    shrinkA=8, shrinkB=8, zorder=28,
+                )
+                ax.add_patch(error_arrow)
+                ax.text(
+                    (expected_pose[0] + pose_x1[0]) / 2 + 0.10,
+                    (expected_pose[1] + pose_x1[1]) / 2 - 0.10,
+                    f"||Δp||={state['translation_error']:.3f} m",
+                    fontsize=7.6, fontweight="bold", color="#C62828",
+                    ha="left", va="top",
+                    bbox={
+                        "boxstyle": "round,pad=0.18",
+                        "fc": "white", "ec": "#C62828", "alpha": 0.94,
+                    },
+                    zorder=35,
+                )
+            else:
+                ax.text(
+                    expected_pose[0] + 0.25,
+                    expected_pose[1] - 0.45,
+                    "error de posición ≈ 0",
+                    fontsize=7.4, fontweight="bold", color="#2E8B57",
+                    ha="center", va="center",
+                )
+
+        if state.get("show_angular_error", False):
+            angle_error_deg = degrees(state["visual_error"][2])
+            if abs(angle_error_deg) > 1e-7:
+                start_deg = degrees(expected_pose[2])
+                end_deg = start_deg + angle_error_deg
+                theta1, theta2 = sorted((start_deg, end_deg))
+                arc = Arc(
+                    (pose_x1[0], pose_x1[1]),
+                    width=0.75, height=0.75,
+                    angle=0.0, theta1=theta1, theta2=theta2,
+                    linewidth=2.6, color="#D62728", zorder=29,
+                )
+                ax.add_patch(arc)
+                ax.text(
+                    pose_x1[0] + 0.42,
+                    pose_x1[1] + 0.18,
+                    f"Δθ={angle_error_deg:.2f}°",
+                    fontsize=7.4, fontweight="bold", color="#C62828",
+                    ha="left", va="center",
+                )
+
+        if state.get("show_local_frame", False):
+            ax.text(
+                pose_x0[0] - 0.45,
+                pose_x0[1] + 0.55,
+                "z01 se expresa\nen los ejes de x0",
+                fontsize=7.2, fontweight="bold", color="#1F4F73",
+                ha="center", va="bottom",
+                bbox={
+                    "boxstyle": "round,pad=0.25",
+                    "fc": "white", "ec": "#1F4F73", "alpha": 0.95,
+                },
+            )
+
+        if state.get("show_angle_wrap", False):
+            ax.text(
+                0.03, 0.97,
+                "Ángulos periódicos\n179° ↔ -179°\ndiferencia real: 2°",
+                transform=ax.transAxes,
+                fontsize=7.5, fontweight="bold", color="#7A1D1D",
+                ha="left", va="top",
+                bbox={
+                    "boxstyle": "round,pad=0.30",
+                    "fc": "#F7C6C7", "ec": "#C62828", "alpha": 0.96,
+                },
+            )
+
+        ax.text(
+            0.99, 0.02,
+            "Verde = sensor fijo  ·  Morado = modelo(x0, x1)",
+            transform=ax.transAxes, fontsize=7.2,
+            ha="right", va="bottom", color="#444444",
+        )
+
+    @staticmethod
+    def _dibujar_caja_flujo(ax, xy, width, height, text, face, edge, active):
+        """Dibuja una caja del flujo conceptual."""
+
+        rectangle = Rectangle(
+            xy, width, height,
+            facecolor=face, edgecolor=edge,
+            linewidth=2.8 if active else 1.4,
+        )
+        ax.add_patch(rectangle)
+        ax.text(
+            xy[0] + width / 2,
+            xy[1] + height / 2,
+            text,
+            fontsize=7.0,
+            fontweight="bold" if active else "normal",
+            ha="center",
+            va="center",
+            linespacing=1.25,
+            color=edge,
+        )
+
+    def _dibujar_grafo_flujo_medicion_prediccion(self, ax, graph, state):
+        """Muestra el grafo y el flujo variable→predicción→residuo."""
+
+        ax.clear()
+        ax.axis("off")
+        ax.set_xlim(0, 1)
+        ax.set_ylim(0, 1)
+        ax.set_title("Grafo y flujo de cálculo", fontsize=10.8, fontweight="bold")
+
+        focus = state.get("focus")
+
+        # Grafo de variables en la parte superior.
+        node_positions = {
+            "prior": (0.13, 0.82),
+            "x0": (0.47, 0.82),
+            "x1": (0.83, 0.82),
+        }
+
+        prior_box = Rectangle(
+            (0.04, 0.755), 0.18, 0.13,
+            facecolor="#E5E5E5", edgecolor="#666666", linewidth=1.4,
+        )
+        ax.add_patch(prior_box)
+        ax.text(0.13, 0.82, "prior", fontsize=7.6, fontweight="bold", ha="center", va="center")
+
+        for node, color, edge_color in (
+            ("x0", "#B7D7F0", "#1F4F73"),
+            ("x1", "#FBE5A6", "#8A4B08"),
+        ):
+            x, y = node_positions[node]
+            ellipse = Ellipse(
+                (x, y), 0.20, 0.13,
+                facecolor=color, edgecolor=edge_color, linewidth=2.0,
+            )
+            ax.add_patch(ellipse)
+            ax.text(x, y, node, fontsize=8.3, fontweight="bold", ha="center", va="center")
+
+        ax.add_patch(FancyArrowPatch(
+            (0.22, 0.82), (0.37, 0.82),
+            arrowstyle="-|>", mutation_scale=12,
+            linewidth=1.6, color="#666666",
+        ))
+        ax.add_patch(FancyArrowPatch(
+            (0.57, 0.82), (0.73, 0.82),
+            arrowstyle="-|>", mutation_scale=12,
+            linewidth=2.4, color="#2E8B57",
+        ))
+        ax.text(
+            0.65, 0.875,
+            "z01, Σ01, Ω01",
+            fontsize=6.4, fontweight="bold",
+            ha="center", va="bottom", color="#2E8B57",
+        )
+
+        if state.get("show_future_graph", False):
+            for index, x in enumerate((0.18, 0.39, 0.60, 0.81)):
+                ellipse = Ellipse(
+                    (x, 0.665), 0.12, 0.075,
+                    facecolor="#E5E5E5", edgecolor="#666666", linewidth=1.2,
+                )
+                ax.add_patch(ellipse)
+                ax.text(x, 0.665, f"x{index}", fontsize=6.4, fontweight="bold", ha="center", va="center")
+                if index > 0:
+                    ax.add_patch(FancyArrowPatch(
+                        (x - 0.15, 0.665), (x - 0.065, 0.665),
+                        arrowstyle="-|>", mutation_scale=9,
+                        linewidth=1.3, color="#8E5EA2",
+                    ))
+            ax.add_patch(FancyArrowPatch(
+                (0.81, 0.63), (0.18, 0.63),
+                arrowstyle="-|>", mutation_scale=9,
+                linewidth=1.5, color="#D62728",
+                connectionstyle="arc3,rad=-0.35",
+            ))
+            ax.text(0.50, 0.555, "muchos residuos → coste global", fontsize=6.7, fontweight="bold", ha="center", color="#C62828")
+
+        # Flujo conceptual inferior.
+        boxes = {
+            "variables": ((0.05, 0.34), 0.25, 0.12, "variables\nx0, x1", "#B7D7F0", "#1F4F73"),
+            "model": ((0.38, 0.34), 0.24, 0.12, "modelo\nh(x0, x1)", "#E8D7F1", "#8E5EA2"),
+            "prediction": ((0.70, 0.34), 0.25, 0.12, "predicción\nz_hat01", "#E8D7F1", "#8E5EA2"),
+            "measurement": ((0.05, 0.10), 0.25, 0.12, "sensor\nmedición z01", "#D5E8D4", "#2E8B57"),
+            "residual": ((0.38, 0.10), 0.24, 0.12, "comparación\nresiduo e01", "#F7C6C7", "#C62828"),
+            "cost": ((0.70, 0.10), 0.25, 0.12, "ponderación\ncoste E01", "#FBE5A6", "#8A6D1D"),
+        }
+
+        active_keys = {
+            "variables": {"variables"},
+            "measurement": {"measurement", "local_frame"},
+            "model": {"model"},
+            "prediction": {"prediction"},
+            "comparison": {"comparison", "translation_error", "angular_error", "angle_wrap"},
+            "residual": {"residual"},
+            "cost": {"uncertainty", "cost"},
+            "experiment": {"variables", "prediction", "measurement", "residual", "cost"},
+            "correction": {"variables", "prediction", "measurement", "residual", "cost"},
+            "compatible": {"measurement", "prediction", "residual", "cost"},
+            "future_graph": {"residual", "cost"},
+            "summary": set(boxes),
+        }.get(focus, set())
+
+        for key, (xy, width, height, text, face, edge) in boxes.items():
+            self._dibujar_caja_flujo(
+                ax, xy, width, height, text, face, edge, key in active_keys
+            )
+
+        arrows = [
+            ((0.30, 0.40), (0.38, 0.40), "#1F4F73"),
+            ((0.62, 0.40), (0.70, 0.40), "#8E5EA2"),
+            ((0.82, 0.34), (0.58, 0.22), "#8E5EA2"),
+            ((0.30, 0.16), (0.38, 0.16), "#2E8B57"),
+            ((0.62, 0.16), (0.70, 0.16), "#C62828"),
+        ]
+        for start, end, color in arrows:
+            ax.add_patch(FancyArrowPatch(
+                start, end,
+                arrowstyle="-|>", mutation_scale=10,
+                linewidth=1.6, color=color,
+            ))
+
+    def _dibujar_panel_calculos_medicion_prediccion(self, ax, state):
+        """Dibuja valores y muestra qué cambia al modificar x1."""
+
+        ax.clear()
+        ax.axis("off")
+        ax.set_xlim(0, 1)
+        ax.set_ylim(0, 1)
+
+        ax.text(
+            0.02, 0.94,
+            "Valores de la medición y del modelo",
+            fontsize=11.2, fontweight="bold", ha="left", va="top",
+        )
+
+        values = [
+            (
+                "Variable x1",
+                self._formatear_pose_restriccion(state["pose_x1"]),
+                "#FBE5A6", "#8A4B08",
+            ),
+            (
+                "Medición z01 · FIJA",
+                self._formatear_pose_restriccion(state["measurement"]),
+                "#D5E8D4", "#2E8B57",
+            ),
+            (
+                "Predicción z_hat01",
+                self._formatear_pose_restriccion(state["prediction"]),
+                "#E8D7F1", "#8E5EA2",
+            ),
+            (
+                "Residuo e01",
+                self._formatear_vector_restriccion(state["residual"]),
+                "#F7C6C7", "#C62828",
+            ),
+            (
+                "Coste ponderado",
+                f"E01={state['weighted_error']:.6f}\n||e||²={state['unweighted_error']:.6f}",
+                "#FBE5A6", "#8A6D1D",
+            ),
+        ]
+
+        card_width = 0.175
+        gap = 0.016
+        total_width = len(values) * card_width + (len(values) - 1) * gap
+        start_x = 0.50 - total_width / 2
+
+        for index, (title, value, face, edge) in enumerate(values):
+            x = start_x + index * (card_width + gap)
+            rectangle = Rectangle(
+                (x, 0.42), card_width, 0.36,
+                facecolor=face, edgecolor=edge, linewidth=1.6,
+            )
+            ax.add_patch(rectangle)
+            ax.text(
+                x + card_width / 2, 0.695,
+                title, fontsize=7.0, fontweight="bold",
+                ha="center", va="center", color=edge,
+            )
+            ax.text(
+                x + card_width / 2, 0.545,
+                value, fontsize=6.3, family="monospace",
+                ha="center", va="center", linespacing=1.35,
+            )
+
+        if state.get("show_information", False):
+            info = state["information"]
+            contrib = state["contributions"]
+            ax.text(
+                0.02, 0.300,
+                (
+                    "diag(Ω01) = "
+                    f"({info[0][0]:.2f}, {info[1][1]:.2f}, {info[2][2]:.2f})"
+                    "   ·   contribuciones = "
+                    f"({contrib[0]:.3f}, {contrib[1]:.3f}, {contrib[2]:.3f})"
+                ),
+                fontsize=7.0, ha="left", va="center", color="#444444",
+            )
+
+        ax.text(
+            0.02, 0.205,
+            (
+                f"Error visual: ||Δp||={state['translation_error']:.4f} m"
+                f"   ·   |Δθ|={degrees(state['angular_error']):.4f}°"
+            ),
+            fontsize=7.1, ha="left", va="center", color="#444444",
+        )
+
+        initial_cost = state["initial_weighted_error"]
+        current_cost = state["weighted_error"]
+        final_cost = state["final_weighted_error"]
+        ratio = 0.0 if initial_cost <= 0.0 else max(0.0, min(1.0, current_cost / initial_cost))
+
+        bar_x = 0.58
+        bar_y = 0.135
+        bar_width = 0.36
+        bar_height = 0.075
+        ax.add_patch(Rectangle(
+            (bar_x, bar_y), bar_width, bar_height,
+            facecolor="#B7E4C7", edgecolor="#2E8B57", linewidth=1.2,
+        ))
+        ax.add_patch(Rectangle(
+            (bar_x, bar_y), bar_width * ratio, bar_height,
+            facecolor="#F6B4B4", edgecolor="#C62828", linewidth=1.0,
+        ))
+        ax.text(
+            bar_x + bar_width / 2, bar_y + bar_height / 2,
+            f"coste actual / inicial = {100 * ratio:.1f}%",
+            fontsize=7.0, fontweight="bold", ha="center", va="center",
+        )
+
+        ax.text(
+            0.98, 0.300,
+            f"INICIAL E={initial_cost:.6f}   →   FINAL E={final_cost:.6f}",
+            fontsize=7.3, fontweight="bold",
+            ha="right", va="center", color="#1F4F73",
+        )
+
+        ax.text(
+            0.98, 0.070,
+            "La medición z01 no se modifica en ningún fotograma.",
+            fontsize=7.2, fontweight="bold",
+            ha="right", va="center", color="#2E8B57",
+        )
+
+    def _dibujar_estado_medicion_prediccion(
+        self,
+        geometry_ax,
+        flow_ax,
+        info_ax,
+        calculation_ax,
+        graph,
+        state,
+    ):
+        """Dibuja un estado completo del apartado 5.2."""
+
+        self._dibujar_panel_info_medicion_prediccion(info_ax, state)
+        self._dibujar_geometria_medicion_prediccion(geometry_ax, state)
+        self._dibujar_grafo_flujo_medicion_prediccion(flow_ax, graph, state)
+        self._dibujar_panel_calculos_medicion_prediccion(calculation_ax, state)
+
+    def animate_measurement_prediction_error(
+        self,
+        graph,
+        states,
+        title="Variables, medición, predicción y error",
+        final_image_path=None,
+        repeat=False,
+    ):
+        """
+        Anima la diferencia entre variables, medición, predicción y residuo.
+
+        La medición permanece fija mientras la estimación x1 cambia. En cada
+        estado se recalculan la predicción, el residuo y el coste ponderado.
+        """
+
+        if not states:
+            raise ValueError(
+                "La lista de estados de medición/predicción no puede estar vacía."
+            )
+
+        if not graph.is_directed():
+            raise ValueError("El grafo de mediciones debe ser dirigido.")
+
+        if not graph.has_edge("x0", "x1"):
+            raise ValueError("Debe existir la medición dirigida x0→x1.")
+
+        (
+            fig,
+            geometry_ax,
+            flow_ax,
+            info_ax,
+            calculation_ax,
+        ) = self._preparar_figura_medicion_prediccion(title)
+
+        if final_image_path is not None:
+            self._dibujar_estado_medicion_prediccion(
+                geometry_ax=geometry_ax,
+                flow_ax=flow_ax,
+                info_ax=info_ax,
+                calculation_ax=calculation_ax,
+                graph=graph,
+                state=states[-1],
+            )
+
+            final_image_path = Path(final_image_path)
+            final_image_path.parent.mkdir(parents=True, exist_ok=True)
+            fig.savefig(final_image_path, dpi=200, bbox_inches="tight")
+            print(f"Imagen final guardada en: {final_image_path}")
+
+        def init():
+            self._dibujar_estado_medicion_prediccion(
+                geometry_ax=geometry_ax,
+                flow_ax=flow_ax,
+                info_ax=info_ax,
+                calculation_ax=calculation_ax,
+                graph=graph,
+                state=states[0],
+            )
+            return []
+
+        def update(frame_index):
+            self._dibujar_estado_medicion_prediccion(
+                geometry_ax=geometry_ax,
+                flow_ax=flow_ax,
                 info_ax=info_ax,
                 calculation_ax=calculation_ax,
                 graph=graph,
