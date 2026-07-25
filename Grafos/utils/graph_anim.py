@@ -24,6 +24,7 @@ class GraphAnimator:
     - funciones de coste y mínimos cuadrados,
     - incertidumbre, covarianza y matrices de información,
     - priors, libertad de gauge y anclaje de pose graphs,
+    - optimización no lineal iterativa con Gauss-Newton y Levenberg-Marquardt,
     - caminos mínimos con Bellman-Ford,
     - caminos mínimos con Floyd-Warshall,
     - árboles de expansión mínima con Prim y Kruskal,
@@ -17415,4 +17416,977 @@ class GraphAnimator:
         )
 
         plt.show()
+        return self.animation
+
+    # ------------------------------------------------------------------
+    # Elementos específicos de optimización no lineal iterativa
+    # ------------------------------------------------------------------
+
+    def _preparar_figura_optimizacion_no_lineal(self, title):
+        """
+        Crea una figura didáctica para el ajuste no lineal.
+
+        Distribución:
+        - izquierda: fase, parámetros y magnitudes de la iteración;
+        - derecha superior: puntos, residuos y curvas;
+        - derecha inferior izquierda: coste por intento;
+        - derecha inferior derecha: sistema local y conexiones con SLAM.
+        """
+
+        fig = plt.figure(figsize=self.figsize)
+
+        grid = fig.add_gridspec(
+            2,
+            3,
+            width_ratios=[1.55, 3.10, 2.10],
+            height_ratios=[3.85, 2.15],
+            wspace=0.10,
+            hspace=0.13,
+        )
+
+        info_ax = fig.add_subplot(grid[:, 0])
+        curve_ax = fig.add_subplot(grid[0, 1:])
+        cost_ax = fig.add_subplot(grid[1, 1])
+        diagnostics_ax = fig.add_subplot(grid[1, 2])
+
+        fig.suptitle(
+            title,
+            fontsize=15,
+            fontweight="bold",
+        )
+
+        fig.subplots_adjust(
+            left=0.025,
+            right=0.985,
+            top=0.925,
+            bottom=0.055,
+        )
+
+        return fig, info_ax, curve_ax, cost_ax, diagnostics_ax
+
+    @staticmethod
+    def _formatear_numero_optimizacion(valor, precision=4):
+        """Formatea magnitudes finitas y valores especiales."""
+
+        if valor is None:
+            return "—"
+
+        valor = float(valor)
+
+        if valor != valor:
+            return "NaN"
+        if valor == float("inf"):
+            return "∞"
+        if valor == float("-inf"):
+            return "-∞"
+
+        magnitud = abs(valor)
+
+        if magnitud != 0.0 and (magnitud >= 1e4 or magnitud < 1e-3):
+            return f"{valor:.2e}"
+
+        return f"{valor:.{precision}f}"
+
+    def _dibujar_panel_optimizacion_no_lineal(self, ax, state):
+        """Dibuja la fase, los parámetros y las métricas actuales."""
+
+        ax.clear()
+        ax.axis("off")
+        ax.set_xlim(0, 1)
+        ax.set_ylim(0, 1)
+
+        phase_titles = {
+            "introduction": "PROBLEMA NO LINEAL",
+            "true_model": "MODELO DE REFERENCIA",
+            "measurements": "MEDICIONES CON RUIDO",
+            "initial_curve": "ESTIMACIÓN INICIAL",
+            "initial_residuals": "RESIDUOS INICIALES",
+            "linearization": "LINEALIZACIÓN LOCAL",
+            "proposal": "PROPUESTA DE PASO",
+            "accepted": "PASO ACEPTADO",
+            "updated": "NUEVA ESTIMACIÓN",
+            "rejected": "PASO RECHAZADO",
+            "convergence": "CONVERGENCIA",
+            "connections": "CONEXIÓN CON SLAM",
+            "summary": "RESULTADO FINAL",
+        }
+
+        phase = state.get("phase", "")
+        title = phase_titles.get(phase, phase.upper())
+
+        if state.get("accepted") is True:
+            title_color = "#2E8B57"
+        elif state.get("accepted") is False:
+            title_color = "#C62828"
+        else:
+            title_color = "#1F4F73"
+
+        ax.text(
+            0.50,
+            0.975,
+            title,
+            fontsize=11.2,
+            fontweight="bold",
+            ha="center",
+            va="top",
+            color=title_color,
+        )
+
+        ax.text(
+            0.50,
+            0.932,
+            (
+                f"Estado {state.get('step', 1)}"
+                f" de {state.get('total_steps', 1)}"
+            ),
+            fontsize=7.5,
+            ha="center",
+            va="top",
+            color="#555555",
+        )
+
+        message = state.get("message", "")
+
+        ax.text(
+            0.50,
+            0.855,
+            message,
+            fontsize=7.6,
+            ha="center",
+            va="center",
+            wrap=True,
+            linespacing=1.35,
+            bbox={
+                "boxstyle": "round,pad=0.42",
+                "fc": "white",
+                "ec": "#999999",
+                "alpha": 0.98,
+            },
+        )
+
+        parameters = list(state.get("current_parameters", [0, 0, 0, 0]))
+        names = [
+            ("a", "amplitud"),
+            ("b", "frecuencia"),
+            ("c", "fase"),
+            ("d", "offset"),
+        ]
+
+        ax.text(
+            0.08,
+            0.735,
+            "Parámetros actuales",
+            fontsize=8.5,
+            fontweight="bold",
+            ha="left",
+            va="center",
+        )
+
+        y_positions = [0.665, 0.590, 0.515, 0.440]
+
+        for (symbol, label), value, y in zip(names, parameters, y_positions):
+            rectangle = Rectangle(
+                (0.08, y - 0.032),
+                0.84,
+                0.064,
+                facecolor="#F4F4F4",
+                edgecolor="#777777",
+                linewidth=1.0,
+            )
+            ax.add_patch(rectangle)
+            ax.text(
+                0.14,
+                y,
+                symbol,
+                fontsize=8.4,
+                fontweight="bold",
+                ha="center",
+                va="center",
+            )
+            ax.text(
+                0.25,
+                y,
+                label,
+                fontsize=6.5,
+                ha="left",
+                va="center",
+                color="#555555",
+            )
+            ax.text(
+                0.87,
+                y,
+                self._formatear_numero_optimizacion(value, 5),
+                fontsize=7.2,
+                fontweight="bold",
+                ha="right",
+                va="center",
+            )
+
+        trial = state.get("trial")
+        trial_text = "—" if trial is None else str(int(trial))
+
+        metrics = [
+            ("intento", trial_text),
+            (
+                "coste",
+                self._formatear_numero_optimizacion(
+                    state.get("current_cost", 0.0),
+                    5,
+                ),
+            ),
+            (
+                "λ",
+                self._formatear_numero_optimizacion(
+                    state.get("lambda", 0.0),
+                    3,
+                ),
+            ),
+            (
+                "||Δθ||",
+                self._formatear_numero_optimizacion(
+                    state.get("step_norm", 0.0),
+                    3,
+                ),
+            ),
+            (
+                "||g||",
+                self._formatear_numero_optimizacion(
+                    state.get("gradient_norm", 0.0),
+                    3,
+                ),
+            ),
+            (
+                "cond(H)",
+                self._formatear_numero_optimizacion(
+                    state.get("condition_number", 0.0),
+                    3,
+                ),
+            ),
+        ]
+
+        ax.text(
+            0.08,
+            0.355,
+            "Magnitudes de la iteración",
+            fontsize=8.5,
+            fontweight="bold",
+            ha="left",
+            va="center",
+        )
+
+        metric_y = 0.300
+        for index, (label, value) in enumerate(metrics):
+            column = index % 2
+            row = index // 2
+            x = 0.08 + column * 0.44
+            y = metric_y - row * 0.073
+
+            rectangle = Rectangle(
+                (x, y - 0.027),
+                0.40,
+                0.054,
+                facecolor="#EDF3F8",
+                edgecolor="#7A9CB8",
+                linewidth=0.9,
+            )
+            ax.add_patch(rectangle)
+            ax.text(
+                x + 0.03,
+                y,
+                label,
+                fontsize=6.2,
+                ha="left",
+                va="center",
+                color="#555555",
+            )
+            ax.text(
+                x + 0.37,
+                y,
+                value,
+                fontsize=6.4,
+                fontweight="bold",
+                ha="right",
+                va="center",
+            )
+
+        accepted = state.get("accepted")
+
+        if accepted is True:
+            status_text = "ACEPTADO · el coste disminuye"
+            face_color = "#DDF1E5"
+            edge_color = "#2E8B57"
+        elif accepted is False:
+            status_text = "RECHAZADO · aumenta el damping"
+            face_color = "#FCE0E0"
+            edge_color = "#C62828"
+        else:
+            status_text = "Se evalúa una aproximación local"
+            face_color = "#FBEBCB"
+            edge_color = "#8A6D1D"
+
+        ax.text(
+            0.50,
+            0.055,
+            status_text,
+            fontsize=7.4,
+            fontweight="bold",
+            ha="center",
+            va="center",
+            color=edge_color,
+            bbox={
+                "boxstyle": "round,pad=0.38",
+                "fc": face_color,
+                "ec": edge_color,
+                "alpha": 0.98,
+            },
+        )
+
+    def _dibujar_curvas_optimizacion_no_lineal(self, ax, state):
+        """Dibuja puntos, residuos y curvas inicial, candidata y final."""
+
+        ax.clear()
+        ax.grid(True, alpha=0.18)
+        ax.set_title(
+            "Ajuste de una curva sinusoidal a puntos con ruido",
+            fontsize=11.5,
+            fontweight="bold",
+        )
+        ax.set_xlabel("x", fontsize=8)
+        ax.set_ylabel("y", fontsize=8)
+        ax.tick_params(labelsize=7)
+
+        x_values = list(state.get("x_values", []))
+        y_values = list(state.get("y_values", []))
+        visible_points = min(
+            int(state.get("visible_points", len(x_values))),
+            len(x_values),
+        )
+
+        if x_values:
+            x_min = min(x_values)
+            x_max = max(x_values)
+            y_candidates = list(y_values)
+
+            for key in [
+                "true_curve",
+                "initial_curve",
+                "current_curve",
+                "candidate_curve",
+                "final_curve",
+            ]:
+                values = state.get(key)
+                if values:
+                    y_candidates.extend(values)
+
+            y_min = min(y_candidates)
+            y_max = max(y_candidates)
+            margin = max(0.25, 0.12 * (y_max - y_min))
+
+            ax.set_xlim(x_min - 0.10, x_max + 0.10)
+            ax.set_ylim(y_min - margin, y_max + margin)
+
+        if state.get("show_true_curve"):
+            ax.plot(
+                x_values,
+                state.get("true_curve", []),
+                color="#555555",
+                linewidth=2.0,
+                linestyle="dashed",
+                label="curva verdadera",
+                zorder=10,
+            )
+
+        if visible_points > 0:
+            ax.scatter(
+                x_values[:visible_points],
+                y_values[:visible_points],
+                s=28,
+                color="#222222",
+                edgecolors="white",
+                linewidths=0.7,
+                label="mediciones",
+                zorder=35,
+            )
+
+        if state.get("show_initial_curve"):
+            ax.plot(
+                x_values,
+                state.get("initial_curve", []),
+                color="#F28E2B",
+                linewidth=2.0,
+                linestyle="dotted",
+                alpha=0.75,
+                label="curva inicial",
+                zorder=13,
+            )
+
+        if state.get("show_residuals") and visible_points > 0:
+            current_curve = list(state.get("current_curve", []))
+
+            for index in range(0, visible_points, 2):
+                ax.plot(
+                    [x_values[index], x_values[index]],
+                    [current_curve[index], y_values[index]],
+                    color="#8E5EA2",
+                    linewidth=1.15,
+                    alpha=0.55,
+                    zorder=20,
+                )
+
+        if (
+            state.get("show_current_curve")
+            and not state.get("show_final_curve")
+        ):
+            current_label = (
+                "curva final"
+                if state.get("phase") in {
+                    "convergence",
+                    "connections",
+                    "summary",
+                }
+                else "estimación actual"
+            )
+            ax.plot(
+                x_values,
+                state.get("current_curve", []),
+                color="#4C9ED9",
+                linewidth=2.8,
+                label=current_label,
+                zorder=28,
+            )
+
+        if state.get("show_candidate_curve") and state.get("candidate_curve"):
+            accepted = state.get("accepted")
+            candidate_color = (
+                "#2E8B57"
+                if accepted is True
+                else "#C62828"
+                if accepted is False
+                else "#8E5EA2"
+            )
+            ax.plot(
+                x_values,
+                state.get("candidate_curve", []),
+                color=candidate_color,
+                linewidth=2.4,
+                linestyle="dashdot",
+                alpha=0.88,
+                label="candidata",
+                zorder=30,
+            )
+
+        if state.get("show_final_curve"):
+            ax.plot(
+                x_values,
+                state.get("final_curve", []),
+                color="#2E8B57",
+                linewidth=3.4,
+                label="ajuste final",
+                zorder=32,
+            )
+
+        handles, labels = ax.get_legend_handles_labels()
+        unique = {}
+        for handle, label in zip(handles, labels):
+            unique[label] = handle
+
+        if unique:
+            ax.legend(
+                unique.values(),
+                unique.keys(),
+                fontsize=7.0,
+                loc="upper right",
+                ncol=2,
+                framealpha=0.96,
+            )
+
+        ax.text(
+            0.015,
+            0.025,
+            r"$y=a\sin(bx+c)+d$",
+            transform=ax.transAxes,
+            fontsize=8.2,
+            fontweight="bold",
+            ha="left",
+            va="bottom",
+            bbox={
+                "boxstyle": "round,pad=0.25",
+                "fc": "white",
+                "ec": "#777777",
+                "alpha": 0.95,
+            },
+        )
+
+        ax.text(
+            0.985,
+            0.025,
+            (
+                "F actual = "
+                + self._formatear_numero_optimizacion(
+                    state.get("current_cost", 0.0),
+                    5,
+                )
+            ),
+            transform=ax.transAxes,
+            fontsize=7.5,
+            fontweight="bold",
+            ha="right",
+            va="bottom",
+            color="#1F4F73",
+            bbox={
+                "boxstyle": "round,pad=0.25",
+                "fc": "white",
+                "ec": "#7A9CB8",
+                "alpha": 0.95,
+            },
+        )
+
+    def _dibujar_coste_optimizacion_no_lineal(self, ax, state):
+        """Dibuja el coste de pasos aceptados y candidatos rechazados."""
+
+        ax.clear()
+        ax.set_title(
+            "Coste por intento",
+            fontsize=9.8,
+            fontweight="bold",
+        )
+        ax.set_xlabel("intento", fontsize=7.5)
+        ax.set_ylabel("F (escala log)", fontsize=7.5)
+        ax.tick_params(labelsize=7)
+        ax.grid(True, alpha=0.20)
+
+        if not state.get("show_cost_history"):
+            ax.text(
+                0.50,
+                0.52,
+                "El historial aparecerá\nal iniciar las iteraciones.",
+                transform=ax.transAxes,
+                fontsize=8.0,
+                ha="center",
+                va="center",
+                color="#555555",
+                bbox={
+                    "boxstyle": "round,pad=0.40",
+                    "fc": "white",
+                    "ec": "#999999",
+                },
+            )
+            return
+
+        history = list(state.get("history", []))
+        visible_count = min(
+            int(state.get("visible_history_count", 0)),
+            len(history),
+        )
+        visible = history[:visible_count]
+
+        accepted_x = [0]
+        accepted_y = [float(state.get("initial_cost", 1.0))]
+        accepted_candidate_x = []
+        accepted_candidate_y = []
+        rejected_x = []
+        rejected_y = []
+
+        for record in visible:
+            x_position = int(record.get("trial", 0)) + 1
+            candidate_cost = float(record.get("candidate_cost", float("inf")))
+
+            if candidate_cost <= 0.0 or candidate_cost == float("inf"):
+                continue
+
+            if record.get("accepted"):
+                accepted_candidate_x.append(x_position)
+                accepted_candidate_y.append(candidate_cost)
+                accepted_x.append(x_position)
+                accepted_y.append(candidate_cost)
+            else:
+                rejected_x.append(x_position)
+                rejected_y.append(candidate_cost)
+
+        ax.plot(
+            accepted_x,
+            accepted_y,
+            color="#2E8B57",
+            linewidth=2.3,
+            marker="o",
+            markersize=4.2,
+            label="coste aceptado",
+            zorder=25,
+        )
+
+        if accepted_candidate_x:
+            ax.scatter(
+                accepted_candidate_x,
+                accepted_candidate_y,
+                s=30,
+                color="#2E8B57",
+                edgecolors="white",
+                linewidths=0.6,
+                label="propuesta aceptada",
+                zorder=30,
+            )
+
+        if rejected_x:
+            ax.scatter(
+                rejected_x,
+                rejected_y,
+                s=38,
+                marker="x",
+                color="#C62828",
+                linewidths=1.8,
+                label="propuesta rechazada",
+                zorder=32,
+            )
+
+            for x_position, y_value in zip(rejected_x, rejected_y):
+                current_cost = None
+                record = history[x_position - 1]
+                current_cost = float(record.get("cost", y_value))
+                ax.plot(
+                    [x_position, x_position],
+                    [current_cost, y_value],
+                    color="#C62828",
+                    linewidth=1.0,
+                    linestyle="dotted",
+                    alpha=0.65,
+                    zorder=15,
+                )
+
+        all_positive = [
+            value
+            for value in accepted_y + accepted_candidate_y + rejected_y
+            if value > 0.0
+        ]
+
+        if all_positive:
+            ax.set_yscale("log")
+            minimum = min(all_positive)
+            maximum = max(all_positive)
+            ax.set_ylim(minimum * 0.55, maximum * 2.2)
+
+        total_trials = max(len(history), 1)
+        ax.set_xlim(-0.4, total_trials + 0.8)
+
+        if visible:
+            last_record = visible[-1]
+            status = (
+                "aceptado"
+                if last_record.get("accepted")
+                else "rechazado"
+            )
+            ax.text(
+                0.98,
+                0.96,
+                (
+                    f"último: {status}\n"
+                    f"λ={self._formatear_numero_optimizacion(last_record.get('lambda'), 2)}"
+                ),
+                transform=ax.transAxes,
+                fontsize=6.7,
+                ha="right",
+                va="top",
+                color=(
+                    "#2E8B57"
+                    if last_record.get("accepted")
+                    else "#C62828"
+                ),
+                bbox={
+                    "boxstyle": "round,pad=0.25",
+                    "fc": "white",
+                    "ec": "#999999",
+                    "alpha": 0.95,
+                },
+            )
+
+        ax.legend(
+            fontsize=6.4,
+            loc="upper right",
+            framealpha=0.95,
+        )
+
+    def _dibujar_diagnostico_optimizacion_no_lineal(self, ax, state):
+        """Muestra el sistema local, el damping y la conexión con Graph SLAM."""
+
+        ax.clear()
+        ax.axis("off")
+        ax.set_xlim(0, 1)
+        ax.set_ylim(0, 1)
+
+        ax.text(
+            0.50,
+            0.965,
+            "Linealización y actualización",
+            fontsize=9.8,
+            fontweight="bold",
+            ha="center",
+            va="top",
+        )
+
+        if state.get("show_linearization"):
+            equations = [
+                r"$e(\theta+\Delta\theta)\approx e+J\Delta\theta$",
+                r"$H=J^TWJ$",
+                r"$g=J^TWe$",
+                r"$(H+\lambda\,\mathrm{diag}(H))\Delta\theta=-g$",
+            ]
+
+            y_positions = [0.84, 0.72, 0.60, 0.48]
+
+            for equation, y in zip(equations, y_positions):
+                ax.text(
+                    0.50,
+                    y,
+                    equation,
+                    fontsize=8.3,
+                    ha="center",
+                    va="center",
+                    color="#1F4F73",
+                    bbox={
+                        "boxstyle": "round,pad=0.25",
+                        "fc": "#EDF3F8",
+                        "ec": "#7A9CB8",
+                        "alpha": 0.96,
+                    },
+                )
+        else:
+            ax.text(
+                0.50,
+                0.68,
+                "Cada iteración aproxima\nlocalmente el problema.",
+                fontsize=8.3,
+                ha="center",
+                va="center",
+                color="#555555",
+                linespacing=1.5,
+                bbox={
+                    "boxstyle": "round,pad=0.45",
+                    "fc": "white",
+                    "ec": "#999999",
+                },
+            )
+
+        if state.get("show_damping"):
+            rho = state.get("rho", 0.0)
+            accepted = state.get("accepted")
+            if accepted is True:
+                damping_text = "paso bueno → λ disminuye"
+                damping_color = "#2E8B57"
+            elif accepted is False:
+                damping_text = "paso malo → λ aumenta"
+                damping_color = "#C62828"
+            else:
+                damping_text = "λ controla la confianza en el modelo local"
+                damping_color = "#8A6D1D"
+
+            ax.text(
+                0.50,
+                0.355,
+                damping_text,
+                fontsize=7.5,
+                fontweight="bold",
+                ha="center",
+                va="center",
+                color=damping_color,
+            )
+
+            ax.text(
+                0.50,
+                0.275,
+                (
+                    "ρ = reducción real / predicha = "
+                    + self._formatear_numero_optimizacion(rho, 4)
+                ),
+                fontsize=6.8,
+                ha="center",
+                va="center",
+                color="#444444",
+            )
+
+        if state.get("show_connections"):
+            labels = [
+                ("ajuste curva", "#FBE5A6", "#8A6D1D"),
+                ("Gauss-Newton", "#B7D7F0", "#1F4F73"),
+                ("Levenberg-\nMarquardt", "#D8C4E8", "#5A316B"),
+                ("Graph SLAM", "#B7E4C7", "#2E8B57"),
+            ]
+            x_positions = [0.03, 0.275, 0.52, 0.765]
+
+            for index, ((label, face, edge), x) in enumerate(
+                zip(labels, x_positions)
+            ):
+                rectangle = Rectangle(
+                    (x, 0.055),
+                    0.205,
+                    0.135,
+                    facecolor=face,
+                    edgecolor=edge,
+                    linewidth=1.2,
+                )
+                ax.add_patch(rectangle)
+                ax.text(
+                    x + 0.1025,
+                    0.122,
+                    label,
+                    fontsize=6.5,
+                    fontweight="bold",
+                    ha="center",
+                    va="center",
+                )
+
+                if index < len(labels) - 1:
+                    ax.add_patch(
+                        FancyArrowPatch(
+                            (x + 0.205, 0.122),
+                            (x_positions[index + 1], 0.122),
+                            arrowstyle="-|>",
+                            mutation_scale=10,
+                            linewidth=1.2,
+                            color="#666666",
+                        )
+                    )
+        else:
+            current = list(state.get("current_parameters", [0, 0, 0, 0]))
+            final_values = list(state.get("final_parameters", [0, 0, 0, 0]))
+
+            current_text = "  ".join(
+                f"{name}={self._formatear_numero_optimizacion(value, 3)}"
+                for name, value in zip(["a", "b", "c", "d"], current)
+            )
+            final_text = "  ".join(
+                f"{name}={self._formatear_numero_optimizacion(value, 3)}"
+                for name, value in zip(["a", "b", "c", "d"], final_values)
+            )
+
+            ax.text(
+                0.50,
+                0.145,
+                "actual: " + current_text,
+                fontsize=6.5,
+                ha="center",
+                va="center",
+                color="#1F4F73",
+            )
+            ax.text(
+                0.50,
+                0.075,
+                "final: " + final_text,
+                fontsize=6.5,
+                ha="center",
+                va="center",
+                color="#2E8B57",
+            )
+
+    def _dibujar_estado_optimizacion_no_lineal(
+        self,
+        info_ax,
+        curve_ax,
+        cost_ax,
+        diagnostics_ax,
+        state,
+    ):
+        """Dibuja un fotograma completo del apartado 5.6."""
+
+        self._dibujar_panel_optimizacion_no_lineal(info_ax, state)
+        self._dibujar_curvas_optimizacion_no_lineal(curve_ax, state)
+        self._dibujar_coste_optimizacion_no_lineal(cost_ax, state)
+        self._dibujar_diagnostico_optimizacion_no_lineal(
+            diagnostics_ax,
+            state,
+        )
+
+    def animate_nonlinear_optimization(
+        self,
+        x_values,
+        y_values,
+        states,
+        title="Optimización no lineal iterativa",
+        final_image_path=None,
+        repeat=False,
+    ):
+        """
+        Anima el ajuste de una curva sinusoidal mediante Levenberg-Marquardt.
+
+        La imagen final muestra:
+        - puntos con ruido;
+        - curva inicial, verdadera y final;
+        - residuos finales;
+        - coste por intento;
+        - propuestas aceptadas y rechazadas;
+        - ecuaciones de Gauss-Newton y Levenberg-Marquardt;
+        - conexión con Graph SLAM.
+        """
+
+        if not states:
+            raise ValueError(
+                "La lista de estados de optimización no puede estar vacía."
+            )
+
+        x_values = list(x_values)
+        y_values = list(y_values)
+
+        if len(x_values) != len(y_values):
+            raise ValueError("x_values e y_values deben tener la misma longitud.")
+        if len(x_values) < 8:
+            raise ValueError("Se necesitan al menos ocho puntos.")
+
+        (
+            fig,
+            info_ax,
+            curve_ax,
+            cost_ax,
+            diagnostics_ax,
+        ) = self._preparar_figura_optimizacion_no_lineal(title)
+
+        if final_image_path is not None:
+            self._dibujar_estado_optimizacion_no_lineal(
+                info_ax=info_ax,
+                curve_ax=curve_ax,
+                cost_ax=cost_ax,
+                diagnostics_ax=diagnostics_ax,
+                state=states[-1],
+            )
+
+            final_image_path = Path(final_image_path)
+            final_image_path.parent.mkdir(parents=True, exist_ok=True)
+
+            fig.savefig(
+                final_image_path,
+                dpi=200,
+                bbox_inches="tight",
+            )
+
+            print(f"Imagen final guardada en: {final_image_path}")
+
+        def init():
+            self._dibujar_estado_optimizacion_no_lineal(
+                info_ax=info_ax,
+                curve_ax=curve_ax,
+                cost_ax=cost_ax,
+                diagnostics_ax=diagnostics_ax,
+                state=states[0],
+            )
+            return []
+
+        def update(frame_index):
+            self._dibujar_estado_optimizacion_no_lineal(
+                info_ax=info_ax,
+                curve_ax=curve_ax,
+                cost_ax=cost_ax,
+                diagnostics_ax=diagnostics_ax,
+                state=states[frame_index],
+            )
+            return []
+
+        self.animation = FuncAnimation(
+            fig,
+            update,
+            frames=len(states),
+            init_func=init,
+            interval=self.interval,
+            repeat=repeat,
+            blit=False,
+        )
+
+        plt.show()
+
         return self.animation
