@@ -20,7 +20,8 @@ class GraphVisualizer:
       árboles, bosque, conectividad, etc.,
     - visualización de distintas representaciones computacionales
       de un mismo grafo,
-    - comparación semántica de varios usos de los grafos en robótica.
+    - comparación semántica de varios usos de los grafos en robótica,
+    - visualización estática de grafos de conocimiento robóticos.
     """
 
     def __init__(self, figsize=(8, 5)):
@@ -1517,4 +1518,628 @@ class GraphVisualizer:
 
         plt.show()
 
+        return fig
+
+
+    # ------------------------------------------------------------------
+    # Grafo de conocimiento y grafo semántico para robótica
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _knowledge_mapping_value(
+        mapping,
+        u,
+        v,
+        key,
+        relation,
+        default=None,
+    ):
+        """Recupera ajustes visuales asociados a una relación semántica."""
+
+        if not mapping:
+            return default
+
+        candidates = (
+            (u, v, key),
+            (u, v, relation),
+            (u, v),
+            relation,
+        )
+
+        for candidate in candidates:
+            if candidate in mapping:
+                return mapping[candidate]
+
+        return default
+
+    @staticmethod
+    def _knowledge_edge_style(data):
+        """Devuelve color, trazo y grosor según la procedencia del hecho."""
+
+        if not data.get("active", True):
+            return {
+                "color": "#B8B8B8",
+                "linestyle": ":",
+                "linewidth": 2.0,
+                "alpha": 0.80,
+            }
+
+        fact_type = data.get("fact_type", "declarado")
+
+        styles = {
+            "observado": {
+                "color": "#4C78A8",
+                "linestyle": "-",
+                "linewidth": 2.45,
+                "alpha": 0.95,
+            },
+            "declarado": {
+                "color": "#666666",
+                "linestyle": "-",
+                "linewidth": 2.25,
+                "alpha": 0.94,
+            },
+            "inferido": {
+                "color": "#8E63B5",
+                "linestyle": "--",
+                "linewidth": 2.55,
+                "alpha": 0.96,
+            },
+            "accion": {
+                "color": "#2F9E44",
+                "linestyle": "-",
+                "linewidth": 3.25,
+                "alpha": 1.0,
+            },
+        }
+
+        return styles.get(fact_type, styles["declarado"])
+
+    def _draw_knowledge_graph_panel(
+        self,
+        ax,
+        graph,
+        nodes,
+        edge_filter,
+        pos,
+        title,
+        subtitle="",
+        edge_label_offsets=None,
+        edge_rads=None,
+        highlight_nodes=None,
+        highlight_edges=None,
+        node_font_size=8.2,
+        edge_font_size=7.1,
+        minimum_node_size=1750,
+        margin_x=0.24,
+        margin_y=0.34,
+    ):
+        """Dibuja un panel del grafo semántico con aristas múltiples."""
+
+        edge_label_offsets = edge_label_offsets or {}
+        edge_rads = edge_rads or {}
+        highlight_nodes = set(highlight_nodes or [])
+        highlight_edges = set(highlight_edges or [])
+
+        panel_nodes = [node for node in nodes if node in graph]
+        panel_positions = {
+            node: pos[node]
+            for node in panel_nodes
+        }
+
+        edges = [
+            (u, v, key, data)
+            for u, v, key, data in graph.edges(keys=True, data=True)
+            if u in panel_positions
+            and v in panel_positions
+            and edge_filter(u, v, key, data)
+        ]
+
+        ax.clear()
+        ax.axis("off")
+        ax.set_title(
+            title,
+            fontsize=13,
+            fontweight="bold",
+            pad=15,
+        )
+
+        if subtitle:
+            ax.text(
+                0.5,
+                1.005,
+                subtitle,
+                transform=ax.transAxes,
+                ha="center",
+                va="bottom",
+                fontsize=8.5,
+            )
+
+        labels = {
+            node: graph.nodes[node].get("label", str(node))
+            for node in panel_nodes
+        }
+
+        node_sizes = {
+            node: self._estimate_semantic_node_size(
+                label=labels[node],
+                font_size=node_font_size,
+                minimum_size=minimum_node_size,
+                padding_points=18,
+            )
+            for node in panel_nodes
+        }
+        node_shrinks = {
+            node: max(22.0, sqrt(size / pi) * 0.96)
+            for node, size in node_sizes.items()
+        }
+
+        pair_groups = {}
+        for u, v, key, data in edges:
+            pair_groups.setdefault((u, v), []).append((key, data))
+
+        automatic_rads = {}
+        for (u, v), group in pair_groups.items():
+            count = len(group)
+            if count == 1:
+                values = [0.0]
+            else:
+                spread = 0.24
+                start = -spread * (count - 1) / 2
+                values = [start + spread * index for index in range(count)]
+
+            for (key, data), value in zip(group, values):
+                automatic_rads[(u, v, key)] = value
+
+        for u, v, key, data in edges:
+            relation = data.get("relation", str(key))
+            style = self._knowledge_edge_style(data)
+
+            is_highlighted = (
+                (u, v, key) in highlight_edges
+                or (u, v, relation) in highlight_edges
+                or (u, v) in highlight_edges
+            )
+
+            if is_highlighted and data.get("active", True):
+                style = dict(style)
+                style["color"] = "#D62728"
+                style["linewidth"] = max(style["linewidth"], 3.6)
+
+            x1, y1 = panel_positions[u]
+            x2, y2 = panel_positions[v]
+
+            rad = self._knowledge_mapping_value(
+                edge_rads,
+                u,
+                v,
+                key,
+                relation,
+                automatic_rads[(u, v, key)],
+            )
+
+            edge_artist = FancyArrowPatch(
+                (x1, y1),
+                (x2, y2),
+                arrowstyle="-|>",
+                mutation_scale=17,
+                linewidth=style["linewidth"],
+                linestyle=style["linestyle"],
+                color=style["color"],
+                alpha=style["alpha"],
+                shrinkA=node_shrinks[u],
+                shrinkB=node_shrinks[v],
+                connectionstyle=f"arc3,rad={rad}",
+                zorder=12,
+            )
+            ax.add_patch(edge_artist)
+
+            dx = x2 - x1
+            dy = y2 - y1
+            length = max((dx**2 + dy**2) ** 0.5, 1e-9)
+            normal_x = -dy / length
+            normal_y = dx / length
+
+            automatic_offset = (
+                normal_x * rad * 1.55,
+                normal_y * rad * 1.55,
+            )
+            manual_offset = self._knowledge_mapping_value(
+                edge_label_offsets,
+                u,
+                v,
+                key,
+                relation,
+                (0.0, 0.0),
+            )
+            offset = (
+                automatic_offset[0] + manual_offset[0],
+                automatic_offset[1] + manual_offset[1],
+            )
+
+            label = relation.replace("_", " ")
+            confidence = data.get("confidence")
+            if (
+                confidence is not None
+                and confidence < 0.999
+                and data.get("active", True)
+            ):
+                label += f" · {confidence:.2f}"
+
+            self._draw_semantic_edge_label(
+                ax=ax,
+                pos=panel_positions,
+                u=u,
+                v=v,
+                label=label,
+                offset=offset,
+                font_size=edge_font_size,
+            )
+
+        node_colors = {
+            "objeto": "#4C78A8",
+            "lugar": "#59A14F",
+            "agente": "#F28E2B",
+            "clase": "#B07AA1",
+            "concepto": "#9D9D9D",
+        }
+
+        for entity_type, color in node_colors.items():
+            typed_nodes = [
+                node
+                for node in panel_nodes
+                if graph.nodes[node].get("entity_type") == entity_type
+                and node not in highlight_nodes
+            ]
+
+            if not typed_nodes:
+                continue
+
+            collection = nx.draw_networkx_nodes(
+                graph,
+                panel_positions,
+                nodelist=typed_nodes,
+                node_size=[node_sizes[node] for node in typed_nodes],
+                node_color=color,
+                edgecolors="black",
+                linewidths=1.25,
+                ax=ax,
+            )
+            collection.set_zorder(20)
+
+        if highlight_nodes:
+            highlighted = [
+                node
+                for node in panel_nodes
+                if node in highlight_nodes
+            ]
+
+            if highlighted:
+                collection = nx.draw_networkx_nodes(
+                    graph,
+                    panel_positions,
+                    nodelist=highlighted,
+                    node_size=[node_sizes[node] * 1.10 for node in highlighted],
+                    node_color="#FFD166",
+                    edgecolors="#D62728",
+                    linewidths=2.2,
+                    ax=ax,
+                )
+                collection.set_zorder(23)
+
+        for node, (x, y) in panel_positions.items():
+            ax.text(
+                x,
+                y,
+                labels[node],
+                ha="center",
+                va="center",
+                fontsize=node_font_size,
+                fontweight="bold",
+                multialignment="center",
+                linespacing=1.0,
+                color="black",
+                zorder=35,
+            )
+
+        self._set_centered_limits(
+            ax,
+            panel_positions,
+            margin=0.30,
+            margin_x=margin_x,
+            margin_y=margin_y,
+            equal_aspect=False,
+        )
+
+        panel_border = Rectangle(
+            (0.006, 0.006),
+            0.988,
+            0.988,
+            transform=ax.transAxes,
+            fill=False,
+            linewidth=1.0,
+            edgecolor="#BBBBBB",
+            zorder=70,
+        )
+        ax.add_patch(panel_border)
+
+    def show_robot_knowledge_graph(
+        self,
+        graph,
+        scene_positions,
+        ontology_positions,
+        query_results,
+        inference_results,
+        update_summary,
+        statistics,
+        title="Grafo de conocimiento de un robot doméstico",
+        subtitle=(
+            "Objetos, lugares, agentes, clases, consultas, "
+            "inferencias y actualización del mundo"
+        ),
+        save_path=None,
+        scene_edge_label_offsets=None,
+        scene_edge_rads=None,
+        ontology_edge_label_offsets=None,
+        ontology_edge_rads=None,
+        highlight_nodes=None,
+        highlight_edges=None,
+    ):
+        """
+        Muestra una representación estática completa de un grafo semántico.
+
+        La figura separa tres lecturas complementarias:
+        - escena doméstica y relaciones actuales o históricas;
+        - jerarquía de clases y clasificación de instancias;
+        - consultas, inferencias, actualización y estadísticas.
+        """
+
+        highlight_nodes = set(highlight_nodes or [])
+        highlight_edges = set(highlight_edges or [])
+
+        fig = plt.figure(figsize=self.figsize)
+        fig.suptitle(
+            title,
+            fontsize=18,
+            fontweight="bold",
+            y=0.985,
+        )
+        fig.text(
+            0.5,
+            0.953,
+            subtitle,
+            ha="center",
+            va="top",
+            fontsize=10.5,
+        )
+
+        grid = fig.add_gridspec(
+            2,
+            2,
+            width_ratios=[1.72, 0.88],
+            height_ratios=[1.02, 0.98],
+            left=0.025,
+            right=0.985,
+            top=0.895,
+            bottom=0.075,
+            wspace=0.055,
+            hspace=0.16,
+        )
+
+        scene_ax = fig.add_subplot(grid[0, 0])
+        ontology_ax = fig.add_subplot(grid[1, 0])
+        info_ax = fig.add_subplot(grid[:, 1])
+
+        scene_nodes = [
+            node
+            for node, data in graph.nodes(data=True)
+            if data.get("entity_type") != "clase"
+        ]
+        ontology_nodes = list(graph.nodes())
+
+        self._draw_knowledge_graph_panel(
+            ax=scene_ax,
+            graph=graph,
+            nodes=scene_nodes,
+            edge_filter=lambda u, v, key, data: data.get("relation")
+            not in {"es_un", "subclase_de"},
+            pos=scene_positions,
+            title="1. Conocimiento de la escena",
+            subtitle=(
+                "Las relaciones inactivas permanecen como historial "
+                "después del agarre"
+            ),
+            edge_label_offsets=scene_edge_label_offsets,
+            edge_rads=scene_edge_rads,
+            highlight_nodes=highlight_nodes,
+            highlight_edges=highlight_edges,
+            node_font_size=8.3,
+            edge_font_size=7.0,
+            minimum_node_size=1850,
+            margin_x=0.24,
+            margin_y=0.42,
+        )
+
+        self._draw_knowledge_graph_panel(
+            ax=ontology_ax,
+            graph=graph,
+            nodes=ontology_nodes,
+            edge_filter=lambda u, v, key, data: data.get("relation")
+            in {"es_un", "subclase_de"},
+            pos=ontology_positions,
+            title="2. Clases, instancias e inferencia taxonómica",
+            subtitle=(
+                "Las aristas discontinuas representan hechos inferidos"
+            ),
+            edge_label_offsets=ontology_edge_label_offsets,
+            edge_rads=ontology_edge_rads,
+            highlight_nodes=highlight_nodes,
+            highlight_edges=highlight_edges,
+            node_font_size=7.8,
+            edge_font_size=6.6,
+            minimum_node_size=1550,
+            margin_x=0.16,
+            margin_y=0.34,
+        )
+
+        info_ax.axis("off")
+        info_ax.set_title(
+            "3. Consultas y razonamiento",
+            fontsize=13,
+            fontweight="bold",
+            pad=15,
+        )
+
+        y = 0.965
+
+        def add_section(section_title, lines, color="#333333"):
+            nonlocal y
+
+            info_ax.text(
+                0.03,
+                y,
+                section_title,
+                transform=info_ax.transAxes,
+                ha="left",
+                va="top",
+                fontsize=10.2,
+                fontweight="bold",
+                color=color,
+            )
+            y -= 0.040
+
+            body = "\n".join(lines)
+            info_ax.text(
+                0.04,
+                y,
+                body,
+                transform=info_ax.transAxes,
+                ha="left",
+                va="top",
+                fontsize=7.65,
+                linespacing=1.20,
+                wrap=True,
+                bbox={
+                    "boxstyle": "round,pad=0.38",
+                    "fc": "white",
+                    "ec": "#BBBBBB",
+                    "alpha": 0.97,
+                },
+            )
+            number_of_lines = max(1, body.count("\n") + 1)
+            y -= 0.0245 * number_of_lines + 0.052
+
+        query_lines = []
+        for index, query in enumerate(query_results, start=1):
+            question = query.get("question", "Consulta")
+            answer = query.get("answer", "—")
+            query_lines.append(f"{index}. {question}")
+            query_lines.append(f"   → {answer}")
+
+        add_section("Consultas deterministas", query_lines, "#A44A3F")
+
+        inference_lines = []
+        for inference in inference_results:
+            status = "activa" if inference.get("active", True) else "histórica"
+            inference_lines.append(f"• {inference['fact']} [{status}]")
+            inference_lines.append(f"  Regla: {inference['rule']}")
+
+        add_section("Hechos inferidos", inference_lines, "#7A4E9D")
+
+        update_lines = [
+            f"• Evento: {update_summary.get('event', '—')}",
+            f"• Desactivada: {update_summary.get('deactivated', '—')}",
+            f"• Invalidada: {update_summary.get('invalidated', '—')}",
+            f"• Añadida: {update_summary.get('added', '—')}",
+            f"• Objetivo candidato: {update_summary.get('goal', '—')}",
+        ]
+        add_section("Actualización del mundo", update_lines, "#2F7D45")
+
+        statistics_lines = [
+            f"• Entidades: {statistics.get('entities', 0)}",
+            f"• Relaciones totales: {statistics.get('relations_total', 0)}",
+            f"• Relaciones activas: {statistics.get('relations_active', 0)}",
+            f"• Relaciones históricas: {statistics.get('relations_inactive', 0)}",
+            f"• Hechos observados: {statistics.get('observed', 0)}",
+            f"• Hechos declarados: {statistics.get('declared', 0)}",
+            f"• Hechos inferidos: {statistics.get('inferred', 0)}",
+            f"• Hechos creados por acción: {statistics.get('actions', 0)}",
+        ]
+        add_section("Resumen", statistics_lines, "#333333")
+
+        info_border = Rectangle(
+            (0.006, 0.006),
+            0.988,
+            0.988,
+            transform=info_ax.transAxes,
+            fill=False,
+            linewidth=1.0,
+            edgecolor="#BBBBBB",
+            zorder=70,
+        )
+        info_ax.add_patch(info_border)
+
+        legend_handles = [
+            Line2D(
+                [0], [0], marker="o", linestyle="none",
+                markerfacecolor="#4C78A8", markeredgecolor="black",
+                markersize=8, label="Objeto",
+            ),
+            Line2D(
+                [0], [0], marker="o", linestyle="none",
+                markerfacecolor="#59A14F", markeredgecolor="black",
+                markersize=8, label="Lugar",
+            ),
+            Line2D(
+                [0], [0], marker="o", linestyle="none",
+                markerfacecolor="#F28E2B", markeredgecolor="black",
+                markersize=8, label="Agente",
+            ),
+            Line2D(
+                [0], [0], marker="o", linestyle="none",
+                markerfacecolor="#B07AA1", markeredgecolor="black",
+                markersize=8, label="Clase",
+            ),
+            Line2D(
+                [0], [0], color="#4C78A8", linewidth=2.4,
+                label="Observado",
+            ),
+            Line2D(
+                [0], [0], color="#8E63B5", linewidth=2.5,
+                linestyle="--", label="Inferido",
+            ),
+            Line2D(
+                [0], [0], color="#2F9E44", linewidth=3.1,
+                label="Creado por una acción",
+            ),
+            Line2D(
+                [0], [0], color="#B8B8B8", linewidth=2.0,
+                linestyle=":", label="Histórico o inactivo",
+            ),
+        ]
+
+        fig.legend(
+            handles=legend_handles,
+            loc="lower center",
+            bbox_to_anchor=(0.5, 0.015),
+            ncol=8,
+            fontsize=8.0,
+            frameon=True,
+            framealpha=0.97,
+            edgecolor="#AAAAAA",
+            columnspacing=1.35,
+            handlelength=2.2,
+        )
+
+        if save_path is not None:
+            save_path = Path(save_path)
+            save_path.parent.mkdir(parents=True, exist_ok=True)
+            fig.savefig(
+                save_path,
+                dpi=200,
+                bbox_inches="tight",
+            )
+            print(f"Imagen guardada en: {save_path}")
+
+        plt.show()
         return fig
