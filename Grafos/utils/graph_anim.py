@@ -16,6 +16,7 @@ class GraphAnimator:
     - búsqueda en profundidad (DFS),
     - caminos mínimos con Dijkstra,
     - caminos mínimos con A*,
+    - navegación en grid con A* y replanificación dinámica,
     - caminos mínimos con Bellman-Ford,
     - caminos mínimos con Floyd-Warshall,
     - árboles de expansión mínima con Prim y Kruskal,
@@ -9993,6 +9994,737 @@ class GraphAnimator:
                 pagerank_graph=pagerank_graph,
                 pos=pos,
                 state=states[frame_index],
+            )
+            return []
+
+        self.animation = FuncAnimation(
+            fig,
+            update,
+            frames=len(states),
+            init_func=init,
+            interval=self.interval,
+            repeat=repeat,
+            blit=False,
+        )
+
+        plt.show()
+        return self.animation
+
+    # ------------------------------------------------------------------
+    # Navegación en grid con A* y replanificación dinámica
+    # ------------------------------------------------------------------
+
+    def _preparar_figura_navegacion_astar(self, title):
+        """
+        Crea la distribución visual del ejemplo de navegación.
+
+        Distribución:
+        - izquierda: leyenda, significado del grid y métricas;
+        - derecha superior: mapa de ocupación;
+        - derecha inferior: fases de planificación y replanificación.
+        """
+
+        fig = plt.figure(figsize=self.figsize)
+
+        grid_spec = fig.add_gridspec(
+            2,
+            2,
+            width_ratios=[1.75, 4.25],
+            height_ratios=[5.10, 1.30],
+            wspace=0.055,
+            hspace=0.08,
+        )
+
+        info_ax = fig.add_subplot(grid_spec[:, 0])
+        map_ax = fig.add_subplot(grid_spec[0, 1])
+        phase_ax = fig.add_subplot(grid_spec[1, 1])
+
+        fig.suptitle(
+            title,
+            fontsize=15,
+            fontweight="bold",
+        )
+
+        fig.subplots_adjust(
+            left=0.025,
+            right=0.985,
+            top=0.93,
+            bottom=0.045,
+        )
+
+        return fig, map_ax, info_ax, phase_ax
+
+    def _dibujar_leyenda_navegacion_astar(self, ax):
+        """Dibuja la leyenda estable de la navegación en grid."""
+
+        elementos = [
+            Line2D(
+                [0],
+                [0],
+                marker="s",
+                color="none",
+                markerfacecolor="white",
+                markeredgecolor="#888888",
+                markersize=9,
+                label="Casilla libre",
+            ),
+            Line2D(
+                [0],
+                [0],
+                marker="s",
+                color="none",
+                markerfacecolor="#222222",
+                markeredgecolor="#111111",
+                markersize=9,
+                label="Obstáculo",
+            ),
+            Line2D(
+                [0],
+                [0],
+                marker="s",
+                color="none",
+                markerfacecolor="#FBE5A6",
+                markeredgecolor="#8A6D1D",
+                markersize=9,
+                label="Abierta / frontera",
+            ),
+            Line2D(
+                [0],
+                [0],
+                marker="s",
+                color="none",
+                markerfacecolor="#B7D7F0",
+                markeredgecolor="#1F4F73",
+                markersize=9,
+                label="Explorada / cerrada",
+            ),
+            Line2D(
+                [0],
+                [0],
+                marker="s",
+                color="none",
+                markerfacecolor="#D8C4E8",
+                markeredgecolor="#5A316B",
+                markersize=9,
+                label="Casilla actual",
+            ),
+            Line2D(
+                [0],
+                [0],
+                marker="s",
+                color="none",
+                markerfacecolor="#B7E4C7",
+                markeredgecolor="#2E8B57",
+                markersize=9,
+                label="Ruta activa",
+            ),
+            Line2D(
+                [0],
+                [0],
+                marker="s",
+                color="none",
+                markerfacecolor="#D0D0D0",
+                markeredgecolor="#777777",
+                markersize=9,
+                label="Ruta anterior",
+            ),
+            Line2D(
+                [0],
+                [0],
+                marker="o",
+                color="none",
+                markerfacecolor="#F28E2B",
+                markeredgecolor="#8A4B08",
+                markersize=9,
+                label="Robot",
+            ),
+        ]
+
+        ax.legend(
+            handles=elementos,
+            loc="upper center",
+            bbox_to_anchor=(0.5, 0.905),
+            fontsize=6.8,
+            framealpha=0.97,
+            ncol=2,
+            columnspacing=0.7,
+            handletextpad=0.45,
+            borderpad=0.5,
+        )
+
+    @staticmethod
+    def _formatear_celda_navegacion(cell):
+        """Convierte una celda ``(fila, columna)`` en texto compacto."""
+
+        if cell is None:
+            return "—"
+
+        return f"({cell[0]}, {cell[1]})"
+
+    def _dibujar_info_navegacion_astar(
+        self,
+        ax,
+        occupancy_grid,
+        state,
+        start,
+        goal,
+    ):
+        """Dibuja la explicación del modelo y las métricas del estado."""
+
+        ax.clear()
+        ax.axis("off")
+        ax.set_xlim(0, 1)
+        ax.set_ylim(0, 1)
+
+        rows = len(occupancy_grid)
+        columns = len(occupancy_grid[0])
+        obstacle_count = sum(
+            value == 1
+            for row in occupancy_grid
+            for value in row
+        )
+        free_count = rows * columns - obstacle_count
+
+        ax.text(
+            0.50,
+            0.985,
+            "Navegación robótica con A*",
+            fontsize=11.4,
+            fontweight="bold",
+            ha="center",
+            va="top",
+        )
+
+        ax.text(
+            0.50,
+            0.947,
+            "Mapa de ocupación convertido en un grafo",
+            fontsize=8.0,
+            ha="center",
+            va="top",
+            color="#444444",
+        )
+
+        self._dibujar_leyenda_navegacion_astar(ax)
+
+        ax.text(
+            0.50,
+            0.655,
+            (
+                "Casilla blanca = vértice transitable\n"
+                "Adyacencia N/S/E/O = arista de coste 1\n"
+                "Casilla negra = vértice no disponible"
+            ),
+            fontsize=7.5,
+            ha="center",
+            va="center",
+            linespacing=1.45,
+            bbox={
+                "boxstyle": "round,pad=0.45",
+                "fc": "white",
+                "ec": "#777777",
+                "alpha": 0.98,
+            },
+        )
+
+        cards = [
+            (
+                "MAPA",
+                (
+                    f"Grid: {rows} × {columns}\n"
+                    f"Libres: {free_count} · Obstáculos: {obstacle_count}\n"
+                    f"Vértices: {state.get('graph_nodes', free_count)}\n"
+                    f"Aristas: {state.get('graph_edges', '—')}"
+                ),
+                "#E5E5E5",
+            ),
+            (
+                "A*",
+                (
+                    f"Actual: {self._formatear_celda_navegacion(state.get('current'))}\n"
+                    f"g={state.get('current_g', '—')} · "
+                    f"h={state.get('current_h', '—')} · "
+                    f"f={state.get('current_f', '—')}\n"
+                    f"Abiertas: {len(state.get('open_nodes', []))}\n"
+                    f"Cerradas: {len(state.get('closed_nodes', []))}"
+                ),
+                "#FBE5A6",
+            ),
+            (
+                "RUTAS",
+                (
+                    f"Inicial: {state.get('initial_path_cost', '—')} movimientos\n"
+                    f"Replanificada: {state.get('replanned_path_cost', '—')} movimientos\n"
+                    f"Recorridos: {state.get('travelled_cost', 0)}\n"
+                    f"Coste total: {state.get('total_travel_cost', '—')}"
+                ),
+                "#B7E4C7",
+            ),
+        ]
+
+        card_y = [0.490, 0.315, 0.140]
+        card_height = 0.145
+
+        for (title, body, color), y in zip(cards, card_y):
+            rectangle = Rectangle(
+                (0.08, y),
+                0.84,
+                card_height,
+                facecolor=color,
+                edgecolor="#666666",
+                linewidth=1.15,
+            )
+            ax.add_patch(rectangle)
+
+            ax.text(
+                0.12,
+                y + card_height - 0.025,
+                title,
+                fontsize=7.7,
+                fontweight="bold",
+                ha="left",
+                va="top",
+            )
+
+            ax.text(
+                0.12,
+                y + card_height - 0.052,
+                body,
+                fontsize=6.8,
+                ha="left",
+                va="top",
+                linespacing=1.30,
+            )
+
+        ax.text(
+            0.50,
+            0.055,
+            (
+                f"Inicio {self._formatear_celda_navegacion(start)}  ·  "
+                f"Objetivo {self._formatear_celda_navegacion(goal)}\n"
+                "Heurística Manhattan: h = |Δfila| + |Δcolumna|"
+            ),
+            fontsize=6.6,
+            ha="center",
+            va="center",
+            color="#444444",
+        )
+
+    def _dibujar_fases_navegacion_astar(self, ax, state):
+        """Dibuja la secuencia global de planificación y replanificación."""
+
+        ax.clear()
+        ax.axis("off")
+        ax.set_xlim(0, 1)
+        ax.set_ylim(0, 1)
+
+        phases = [
+            ("1", "Mapa"),
+            ("2", "A* inicial"),
+            ("3", "Movimiento"),
+            ("4", "Obstáculo"),
+            ("5", "Replanificación"),
+            ("6", "Objetivo"),
+        ]
+
+        phase_to_index = {
+            "map": 0,
+            "initial_search": 1,
+            "initial_path": 1,
+            "movement": 2,
+            "obstacle": 3,
+            "replanning": 4,
+            "replanned_path": 4,
+            "final_movement": 5,
+            "finished": 5,
+        }
+
+        active_index = phase_to_index.get(state.get("phase"), 0)
+
+        ax.text(
+            0.02,
+            0.88,
+            "Secuencia de navegación",
+            fontsize=11.2,
+            fontweight="bold",
+            ha="left",
+            va="center",
+        )
+
+        ax.text(
+            0.98,
+            0.88,
+            (
+                f"Robot: {self._formatear_celda_navegacion(state.get('robot'))}"
+                f"  ·  Obstáculo dinámico: "
+                f"{self._formatear_celda_navegacion(state.get('dynamic_obstacle'))}"
+            ),
+            fontsize=7.8,
+            ha="right",
+            va="center",
+            color="#444444",
+        )
+
+        start_x = 0.045
+        gap = 0.015
+        cell_width = (0.91 - gap * (len(phases) - 1)) / len(phases)
+        y = 0.42
+        height = 0.29
+
+        for index, (number, label) in enumerate(phases):
+            x = start_x + index * (cell_width + gap)
+
+            if index < active_index:
+                face_color = "#B7D7F0"
+                edge_color = "#1F4F73"
+            elif index == active_index:
+                face_color = "#F6C85F"
+                edge_color = "#8A6D1D"
+            else:
+                face_color = "#E5E5E5"
+                edge_color = "#888888"
+
+            rectangle = Rectangle(
+                (x, y),
+                cell_width,
+                height,
+                facecolor=face_color,
+                edgecolor=edge_color,
+                linewidth=2.0 if index == active_index else 1.2,
+            )
+            ax.add_patch(rectangle)
+
+            ax.text(
+                x + cell_width / 2,
+                y + height * 0.65,
+                number,
+                fontsize=8.5,
+                fontweight="bold",
+                ha="center",
+                va="center",
+            )
+
+            ax.text(
+                x + cell_width / 2,
+                y + height * 0.28,
+                label,
+                fontsize=6.7,
+                ha="center",
+                va="center",
+            )
+
+        ax.text(
+            0.50,
+            0.13,
+            state.get("message", ""),
+            fontsize=8.5,
+            ha="center",
+            va="center",
+            bbox={
+                "boxstyle": "round,pad=0.35",
+                "fc": "white",
+                "ec": "#777777",
+                "alpha": 0.97,
+            },
+        )
+
+    def _dibujar_estado_navegacion_astar(
+        self,
+        map_ax,
+        info_ax,
+        phase_ax,
+        occupancy_grid,
+        state,
+        start,
+        goal,
+    ):
+        """Dibuja un estado completo del ejemplo de navegación."""
+
+        map_ax.clear()
+        map_ax.axis("off")
+
+        rows = len(occupancy_grid)
+        columns = len(occupancy_grid[0])
+
+        map_ax.set_xlim(0, columns)
+        map_ax.set_ylim(rows, 0)
+        map_ax.set_aspect("equal", adjustable="box")
+
+        open_nodes = set(state.get("open_nodes", set()))
+        closed_nodes = set(state.get("closed_nodes", set()))
+        current = state.get("current")
+        active_path = set(state.get("active_path", []))
+        previous_path = set(state.get("previous_path", []))
+        traversed_path = set(state.get("traversed_path", []))
+        dynamic_obstacle = state.get("dynamic_obstacle")
+        robot = state.get("robot")
+
+        for row in range(rows):
+            for column in range(columns):
+                cell = (row, column)
+                is_static_obstacle = occupancy_grid[row][column] == 1
+
+                face_color = "white"
+                edge_color = "#C9C9C9"
+                line_width = 0.45
+
+                if is_static_obstacle:
+                    face_color = "#222222"
+                    edge_color = "#111111"
+                else:
+                    if cell in closed_nodes:
+                        face_color = "#B7D7F0"
+                        edge_color = "#8DB6D6"
+                    if cell in open_nodes:
+                        face_color = "#FBE5A6"
+                        edge_color = "#D5B65A"
+                    if cell in previous_path:
+                        face_color = "#D0D0D0"
+                        edge_color = "#777777"
+                        line_width = 0.8
+                    if cell in active_path:
+                        face_color = "#B7E4C7"
+                        edge_color = "#2E8B57"
+                        line_width = 0.9
+                    if cell in traversed_path:
+                        face_color = "#80CBC4"
+                        edge_color = "#287A73"
+                        line_width = 0.9
+                    if cell == current:
+                        face_color = "#D8C4E8"
+                        edge_color = "#5A316B"
+                        line_width = 1.5
+
+                if cell == start:
+                    face_color = "#81C784"
+                    edge_color = "#2E6B32"
+                    line_width = 1.3
+
+                if cell == goal:
+                    face_color = "#EF9A9A"
+                    edge_color = "#8B1A1A"
+                    line_width = 1.3
+
+                if cell == dynamic_obstacle:
+                    face_color = "#111111"
+                    edge_color = "#C62828"
+                    line_width = 2.2
+
+                rectangle = Rectangle(
+                    (column, row),
+                    1,
+                    1,
+                    facecolor=face_color,
+                    edgecolor=edge_color,
+                    linewidth=line_width,
+                    zorder=10,
+                )
+                map_ax.add_patch(rectangle)
+
+                if cell == dynamic_obstacle:
+                    map_ax.plot(
+                        [column + 0.18, column + 0.82],
+                        [row + 0.18, row + 0.82],
+                        color="#E45756",
+                        linewidth=1.6,
+                        zorder=20,
+                    )
+                    map_ax.plot(
+                        [column + 0.82, column + 0.18],
+                        [row + 0.18, row + 0.82],
+                        color="#E45756",
+                        linewidth=1.6,
+                        zorder=20,
+                    )
+
+        start_row, start_column = start
+        goal_row, goal_column = goal
+
+        map_ax.text(
+            start_column + 0.5,
+            start_row + 0.5,
+            "I",
+            fontsize=7.5,
+            fontweight="bold",
+            ha="center",
+            va="center",
+            color="black",
+            zorder=30,
+        )
+
+        map_ax.text(
+            goal_column + 0.5,
+            goal_row + 0.5,
+            "O",
+            fontsize=7.5,
+            fontweight="bold",
+            ha="center",
+            va="center",
+            color="black",
+            zorder=30,
+        )
+
+        if robot is not None:
+            robot_row, robot_column = robot
+            map_ax.scatter(
+                [robot_column + 0.5],
+                [robot_row + 0.5],
+                s=180,
+                marker="o",
+                facecolor="#F28E2B",
+                edgecolor="#8A4B08",
+                linewidth=1.8,
+                zorder=40,
+            )
+            map_ax.text(
+                robot_column + 0.5,
+                robot_row + 0.5,
+                "R",
+                fontsize=6.8,
+                fontweight="bold",
+                ha="center",
+                va="center",
+                color="black",
+                zorder=45,
+            )
+
+        phase_titles = {
+            "map": "Mapa de ocupación",
+            "initial_search": "A* busca la ruta inicial",
+            "initial_path": "Ruta inicial encontrada",
+            "movement": "El robot sigue la ruta inicial",
+            "obstacle": "Nuevo obstáculo detectado",
+            "replanning": "A* replantea desde la posición actual",
+            "replanned_path": "Ruta alternativa encontrada",
+            "final_movement": "El robot sigue la ruta replanificada",
+            "finished": "Objetivo alcanzado",
+        }
+
+        map_ax.set_title(
+            phase_titles.get(state.get("phase"), "Navegación con A*"),
+            fontsize=12,
+            fontweight="bold",
+            pad=7,
+        )
+
+        map_ax.text(
+            0.99,
+            0.99,
+            (
+                f"Expandidas: {state.get('expanded_count', 0)}"
+                f"  ·  Frontera: {len(open_nodes)}"
+                f"  ·  f=g+h"
+            ),
+            transform=map_ax.transAxes,
+            fontsize=7.8,
+            ha="right",
+            va="top",
+            bbox={
+                "boxstyle": "round,pad=0.28",
+                "fc": "white",
+                "ec": "#888888",
+                "alpha": 0.95,
+            },
+            zorder=60,
+        )
+
+        self._dibujar_info_navegacion_astar(
+            ax=info_ax,
+            occupancy_grid=occupancy_grid,
+            state=state,
+            start=start,
+            goal=goal,
+        )
+
+        self._dibujar_fases_navegacion_astar(
+            ax=phase_ax,
+            state=state,
+        )
+
+    def animate_grid_astar_replanning(
+        self,
+        occupancy_grid,
+        states,
+        start,
+        goal,
+        title="Navegación en grid con A* y replanificación",
+        final_image_path=None,
+        repeat=False,
+    ):
+        """
+        Anima la planificación de una ruta, el movimiento parcial del robot,
+        la aparición de un obstáculo y una segunda ejecución de A*.
+
+        La imagen final muestra:
+        - mapa de ocupación;
+        - trayectoria recorrida;
+        - obstáculo dinámico;
+        - ruta anterior atenuada;
+        - ruta replanificada;
+        - métricas de ambas búsquedas.
+        """
+
+        if not states:
+            raise ValueError(
+                "La lista de estados de navegación no puede estar vacía."
+            )
+
+        if not occupancy_grid or not occupancy_grid[0]:
+            raise ValueError("El mapa de ocupación no puede estar vacío.")
+
+        (
+            fig,
+            map_ax,
+            info_ax,
+            phase_ax,
+        ) = self._preparar_figura_navegacion_astar(title)
+
+        if final_image_path is not None:
+            self._dibujar_estado_navegacion_astar(
+                map_ax=map_ax,
+                info_ax=info_ax,
+                phase_ax=phase_ax,
+                occupancy_grid=occupancy_grid,
+                state=states[-1],
+                start=start,
+                goal=goal,
+            )
+
+            final_image_path = Path(final_image_path)
+            final_image_path.parent.mkdir(
+                parents=True,
+                exist_ok=True,
+            )
+
+            fig.savefig(
+                final_image_path,
+                dpi=200,
+                bbox_inches="tight",
+            )
+
+            print(f"Imagen final guardada en: {final_image_path}")
+
+        def init():
+            self._dibujar_estado_navegacion_astar(
+                map_ax=map_ax,
+                info_ax=info_ax,
+                phase_ax=phase_ax,
+                occupancy_grid=occupancy_grid,
+                state=states[0],
+                start=start,
+                goal=goal,
+            )
+            return []
+
+        def update(frame_index):
+            self._dibujar_estado_navegacion_astar(
+                map_ax=map_ax,
+                info_ax=info_ax,
+                phase_ax=phase_ax,
+                occupancy_grid=occupancy_grid,
+                state=states[frame_index],
+                start=start,
+                goal=goal,
             )
             return []
 
