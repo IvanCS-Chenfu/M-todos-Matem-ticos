@@ -23,6 +23,7 @@ class GraphAnimator:
     - variables, mediciones, predicciones y errores en SE(2),
     - funciones de coste y mínimos cuadrados,
     - incertidumbre, covarianza y matrices de información,
+    - priors, libertad de gauge y anclaje de pose graphs,
     - caminos mínimos con Bellman-Ford,
     - caminos mínimos con Floyd-Warshall,
     - árboles de expansión mínima con Prim y Kruskal,
@@ -16246,6 +16247,1159 @@ class GraphAnimator:
                 graph_ax=graph_ax,
                 flow_ax=flow_ax,
                 graph=graph,
+                state=states[frame_index],
+            )
+            return []
+
+        self.animation = FuncAnimation(
+            fig,
+            update,
+            frames=len(states),
+            init_func=init,
+            interval=self.interval,
+            repeat=repeat,
+            blit=False,
+        )
+
+        plt.show()
+        return self.animation
+    # ------------------------------------------------------------------
+    # Priors, libertad de gauge y anclaje del grafo
+    # ------------------------------------------------------------------
+
+    def _preparar_figura_prior_anclaje(self, title):
+        """Crea dos paneles principales y dos paneles de análisis."""
+
+        fig = plt.figure(figsize=self.figsize)
+        grid = fig.add_gridspec(
+            3,
+            3,
+            width_ratios=[1.55, 3.15, 3.15],
+            height_ratios=[2.45, 2.15, 1.55],
+            wspace=0.12,
+            hspace=0.18,
+        )
+
+        info_ax = fig.add_subplot(grid[:, 0])
+        without_prior_ax = fig.add_subplot(grid[0:2, 1])
+        with_prior_ax = fig.add_subplot(grid[0:2, 2])
+        cost_ax = fig.add_subplot(grid[2, 1])
+        algebra_ax = fig.add_subplot(grid[2, 2])
+
+        fig.suptitle(title, fontsize=15, fontweight="bold")
+        fig.subplots_adjust(
+            left=0.025,
+            right=0.985,
+            top=0.93,
+            bottom=0.045,
+        )
+
+        return (
+            fig,
+            info_ax,
+            without_prior_ax,
+            with_prior_ax,
+            cost_ax,
+            algebra_ax,
+        )
+
+    @staticmethod
+    def _formatear_pose_prior(pose, decimals=2):
+        """Formatea una pose serializada y convierte theta a grados."""
+
+        if pose is None or len(pose) != 3:
+            return "(—, —, —)"
+
+        return (
+            f"({pose[0]:.{decimals}f}, {pose[1]:.{decimals}f}, "
+            f"{degrees(pose[2]):.{decimals}f}°)"
+        )
+
+    @staticmethod
+    def _obtener_configuracion_prior(state, identifier):
+        """Busca una configuración A, B o C dentro del estado."""
+
+        for configuration in state.get("configurations", []):
+            if configuration.get("id") == identifier:
+                return configuration
+
+        return None
+
+    @staticmethod
+    def _envolver_texto_prior(text, maximum_length=30):
+        """Inserta saltos de línea sencillos para tarjetas estrechas."""
+
+        words = str(text).split()
+        lines = []
+        current = []
+        current_length = 0
+
+        for word in words:
+            extra = len(word) if not current else len(word) + 1
+            if current and current_length + extra > maximum_length:
+                lines.append(" ".join(current))
+                current = [word]
+                current_length = len(word)
+            else:
+                current.append(word)
+                current_length += extra
+
+        if current:
+            lines.append(" ".join(current))
+
+        return "\n".join(lines)
+
+    @staticmethod
+    def _limites_comunes_prior(state):
+        """Calcula límites estables para todas las copias del pose graph."""
+
+        xs = []
+        ys = []
+
+        configurations = list(state.get("configurations", []))
+        dynamic = state.get("dynamic")
+
+        if dynamic:
+            configurations.append({"poses": dynamic.get("poses", {})})
+
+        for configuration in configurations:
+            for pose in configuration.get("poses", {}).values():
+                if len(pose) >= 2:
+                    xs.append(pose[0])
+                    ys.append(pose[1])
+
+        prior_pose = state.get("prior_pose", [0.0, 0.0, 0.0])
+        xs.append(prior_pose[0])
+        ys.append(prior_pose[1])
+
+        if not xs:
+            return (-4.0, 8.0, -1.5, 7.0)
+
+        return (
+            min(xs) - 1.25,
+            max(xs) + 1.25,
+            min(ys) - 1.20,
+            max(ys) + 1.20,
+        )
+
+    def _dibujar_pose_prior(
+        self,
+        ax,
+        pose,
+        label,
+        color,
+        edge_color,
+        alpha=1.0,
+        zorder=20,
+        anchored=False,
+    ):
+        """Dibuja una pose como punto orientado con su etiqueta."""
+
+        x, y, theta = pose
+        node_size = 95 if anchored else 70
+
+        ax.scatter(
+            [x],
+            [y],
+            s=node_size,
+            c=[color],
+            edgecolors=edge_color,
+            linewidths=2.2 if anchored else 1.4,
+            alpha=alpha,
+            zorder=zorder,
+        )
+
+        arrow_length = 0.42
+        end_x = x + arrow_length * cos(theta)
+        end_y = y + arrow_length * sin(theta)
+
+        ax.add_patch(
+            FancyArrowPatch(
+                (x, y),
+                (end_x, end_y),
+                arrowstyle="-|>",
+                mutation_scale=10,
+                linewidth=1.8 if anchored else 1.35,
+                color=edge_color,
+                alpha=alpha,
+                zorder=zorder + 1,
+            )
+        )
+
+        ax.text(
+            x,
+            y + 0.30,
+            label,
+            fontsize=7.4,
+            fontweight="bold",
+            ha="center",
+            va="bottom",
+            color="#222222",
+            alpha=alpha,
+            zorder=zorder + 2,
+            bbox={
+                "boxstyle": "round,pad=0.14",
+                "fc": "white",
+                "ec": edge_color,
+                "alpha": 0.86 * alpha,
+            },
+        )
+
+        if anchored:
+            ax.text(
+                x,
+                y - 0.36,
+                "anclada",
+                fontsize=6.6,
+                fontweight="bold",
+                ha="center",
+                va="top",
+                color="#8B0000",
+                zorder=zorder + 2,
+            )
+
+    def _dibujar_pose_graph_prior(
+        self,
+        ax,
+        state,
+        poses,
+        color,
+        edge_color,
+        label_prefix,
+        alpha=1.0,
+        line_style="solid",
+        visible_pose_count=4,
+        visible_edge_count=4,
+        anchored_x0=False,
+        zorder=10,
+    ):
+        """Dibuja una copia completa o parcial del pequeño pose graph."""
+
+        ordered_pose_names = sorted(
+            poses,
+            key=lambda name: int(name[1:]),
+        )[:visible_pose_count]
+        visible_names = set(ordered_pose_names)
+
+        relative_edges = state.get("relative_edges", [])[:visible_edge_count]
+
+        for edge in relative_edges:
+            origin = edge.get("origin")
+            target = edge.get("target")
+
+            if origin not in visible_names or target not in visible_names:
+                continue
+
+            pose_origin = poses[origin]
+            pose_target = poses[target]
+
+            ax.plot(
+                [pose_origin[0], pose_target[0]],
+                [pose_origin[1], pose_target[1]],
+                color=edge_color,
+                linewidth=2.0 if alpha > 0.75 else 1.35,
+                linestyle=line_style,
+                alpha=alpha,
+                zorder=zorder,
+            )
+
+            if edge.get("sensor") == "cierre de ciclo":
+                middle_x = (pose_origin[0] + pose_target[0]) / 2
+                middle_y = (pose_origin[1] + pose_target[1]) / 2
+                ax.text(
+                    middle_x,
+                    middle_y,
+                    "loop",
+                    fontsize=5.8,
+                    ha="center",
+                    va="center",
+                    color=edge_color,
+                    alpha=alpha,
+                    zorder=zorder + 1,
+                    bbox={
+                        "boxstyle": "round,pad=0.10",
+                        "fc": "white",
+                        "ec": "none",
+                        "alpha": 0.76,
+                    },
+                )
+
+        for name in ordered_pose_names:
+            self._dibujar_pose_prior(
+                ax=ax,
+                pose=poses[name],
+                label=f"{label_prefix}{name}",
+                color=color,
+                edge_color=edge_color,
+                alpha=alpha,
+                zorder=zorder + 3,
+                anchored=anchored_x0 and name == "x0",
+            )
+
+    def _dibujar_ejes_mundo_prior(self, ax, origin=(0.0, 0.0)):
+        """Dibuja un pequeño sistema de referencia mundial."""
+
+        x, y = origin
+        length = 0.85
+
+        ax.add_patch(
+            FancyArrowPatch(
+                (x, y),
+                (x + length, y),
+                arrowstyle="-|>",
+                mutation_scale=9,
+                linewidth=1.3,
+                color="#333333",
+                zorder=6,
+            )
+        )
+        ax.add_patch(
+            FancyArrowPatch(
+                (x, y),
+                (x, y + length),
+                arrowstyle="-|>",
+                mutation_scale=9,
+                linewidth=1.3,
+                color="#333333",
+                zorder=6,
+            )
+        )
+        ax.text(x + length + 0.08, y, "Xw", fontsize=6.7, va="center")
+        ax.text(x, y + length + 0.08, "Yw", fontsize=6.7, ha="center")
+
+    def _dibujar_panel_prior(self, ax, state):
+        """Dibuja la explicación, la transformación y los costes del paso."""
+
+        ax.clear()
+        ax.axis("off")
+        ax.set_xlim(0, 1)
+        ax.set_ylim(0, 1)
+
+        step = state.get("step", 1)
+        total_steps = state.get("total_steps", 1)
+        dynamic = state.get("dynamic", {})
+        transform = dynamic.get("transform", [0.0, 0.0, 0.0])
+
+        ax.text(
+            0.50,
+            0.985,
+            "Gauge y referencia",
+            fontsize=12,
+            fontweight="bold",
+            ha="center",
+            va="top",
+        )
+        ax.text(
+            0.50,
+            0.948,
+            f"Estado {step} de {total_steps}",
+            fontsize=8.2,
+            ha="center",
+            va="top",
+            color="#444444",
+        )
+
+        cards = [
+            (
+                0.825,
+                "Transformación global g",
+                (
+                    f"g = {self._formatear_pose_prior(transform)}\n"
+                    "xᵢ' = g ⊕ xᵢ"
+                ),
+                "#EEE7F4",
+                "#8E5EA2",
+            ),
+            (
+                0.665,
+                "Coste de la copia activa",
+                (
+                    f"Frel = {dynamic.get('relative_cost', 0.0):.6f}\n"
+                    f"Fprior = {dynamic.get('prior_cost', 0.0):.3f}\n"
+                    f"Ftotal = {dynamic.get('total_cost', 0.0):.3f}"
+                ),
+                "#DDEAF4",
+                "#1F4F73",
+            ),
+            (
+                0.500,
+                "Sin prior",
+                (
+                    f"rango = {state.get('rank_without_prior', 0)}\n"
+                    f"nulidad = {state.get('nullity_without_prior', 0)}\n"
+                    "tx · ty · rotación"
+                ),
+                "#FCE6D4",
+                "#F28E2B",
+            ),
+            (
+                0.335,
+                "Con prior sobre x0",
+                (
+                    f"rango = {state.get('rank_with_prior', 0)}\n"
+                    f"nulidad = {state.get('nullity_with_prior', 0)}\n"
+                    "origen y orientación definidos"
+                ),
+                "#DDF1E5",
+                "#2E8B57",
+            ),
+        ]
+
+        for y, title, body, face_color, edge_color in cards:
+            rectangle = Rectangle(
+                (0.07, y - 0.115),
+                0.86,
+                0.138,
+                facecolor=face_color,
+                edgecolor=edge_color,
+                linewidth=1.5,
+            )
+            ax.add_patch(rectangle)
+            ax.text(
+                0.11,
+                y,
+                title,
+                fontsize=8.5,
+                fontweight="bold",
+                ha="left",
+                va="top",
+            )
+            ax.text(
+                0.11,
+                y - 0.035,
+                body,
+                fontsize=6.9,
+                ha="left",
+                va="top",
+                linespacing=1.35,
+            )
+
+        phase_labels = {
+            "introduction": "Restricciones relativas",
+            "build_poses": "Variables del pose graph",
+            "build_edges": "Aristas relativas",
+            "relative_cost": "Coste interno",
+            "translate_gauge": "Traslación global",
+            "rotate_gauge": "Rotación global",
+            "equivalent_solutions": "Soluciones equivalentes",
+            "nullspace": "Espacio nulo",
+            "add_prior": "Factor prior",
+            "prior_penalty": "Penalización absoluta",
+            "anchored_solution": "Mapa anclado",
+            "physical_priors": "Referencias externas",
+            "summary": "Resumen",
+        }
+
+        ax.text(
+            0.50,
+            0.175,
+            phase_labels.get(state.get("phase"), state.get("phase", "")),
+            fontsize=9.2,
+            fontweight="bold",
+            ha="center",
+            va="center",
+            color="#333333",
+        )
+        ax.text(
+            0.50,
+            0.074,
+            self._envolver_texto_prior(state.get("message", ""), 29),
+            fontsize=7.3,
+            ha="center",
+            va="center",
+            wrap=True,
+            bbox={
+                "boxstyle": "round,pad=0.42",
+                "fc": "white",
+                "ec": "#777777",
+                "alpha": 0.97,
+            },
+        )
+
+    def _dibujar_sin_prior(self, ax, state):
+        """Dibuja el grafo flotante y sus copias equivalentes."""
+
+        ax.clear()
+        limits = self._limites_comunes_prior(state)
+        ax.set_xlim(limits[0], limits[1])
+        ax.set_ylim(limits[2], limits[3])
+        ax.set_aspect("equal", adjustable="box")
+        ax.grid(True, alpha=0.14)
+        ax.set_title(
+            "Sin prior: el grafo puede flotar",
+            fontsize=11.5,
+            fontweight="bold",
+        )
+        ax.set_xlabel("x global [m]", fontsize=8)
+        ax.set_ylabel("y global [m]", fontsize=8)
+        ax.tick_params(labelsize=7)
+
+        original = self._obtener_configuracion_prior(state, "A")
+        translated = self._obtener_configuracion_prior(state, "B")
+        rotated = self._obtener_configuracion_prior(state, "C")
+
+        visible_pose_count = state.get("visible_pose_count", 4)
+        visible_edge_count = state.get("visible_edge_count", 4)
+
+        if state.get("show_original") and original:
+            self._dibujar_pose_graph_prior(
+                ax,
+                state,
+                original["poses"],
+                "#4C9ED9",
+                "#1F4F73",
+                "A·",
+                alpha=0.96,
+                visible_pose_count=visible_pose_count,
+                visible_edge_count=visible_edge_count,
+                zorder=20,
+            )
+
+        if state.get("show_translated") and translated:
+            self._dibujar_pose_graph_prior(
+                ax,
+                state,
+                translated["poses"],
+                "#F6C85F",
+                "#8A6D1D",
+                "B·",
+                alpha=0.70,
+                line_style="dashed",
+                zorder=12,
+            )
+
+        if state.get("show_rotated") and rotated:
+            self._dibujar_pose_graph_prior(
+                ax,
+                state,
+                rotated["poses"],
+                "#D8C4E8",
+                "#5A316B",
+                "C·",
+                alpha=0.70,
+                line_style="dashed",
+                zorder=11,
+            )
+
+        if state.get("show_dynamic"):
+            dynamic = state.get("dynamic", {})
+            self._dibujar_pose_graph_prior(
+                ax,
+                state,
+                dynamic.get("poses", {}),
+                "#F6B4B4",
+                "#C62828",
+                "g·",
+                alpha=0.90,
+                line_style="solid",
+                zorder=30,
+            )
+
+        if state.get("show_gauge"):
+            gauge_x = limits[0] + 0.75
+            gauge_y = limits[2] + 0.72
+            ax.add_patch(
+                FancyArrowPatch(
+                    (gauge_x, gauge_y),
+                    (gauge_x + 1.05, gauge_y),
+                    arrowstyle="-|>",
+                    mutation_scale=10,
+                    linewidth=1.6,
+                    color="#8E5EA2",
+                    zorder=45,
+                )
+            )
+            ax.add_patch(
+                FancyArrowPatch(
+                    (gauge_x, gauge_y),
+                    (gauge_x, gauge_y + 1.05),
+                    arrowstyle="-|>",
+                    mutation_scale=10,
+                    linewidth=1.6,
+                    color="#8E5EA2",
+                    zorder=45,
+                )
+            )
+            ax.add_patch(
+                Arc(
+                    (gauge_x, gauge_y),
+                    1.15,
+                    1.15,
+                    angle=0,
+                    theta1=15,
+                    theta2=285,
+                    linewidth=1.6,
+                    color="#8E5EA2",
+                    zorder=44,
+                )
+            )
+            ax.text(
+                gauge_x + 0.55,
+                gauge_y - 0.32,
+                "tx",
+                fontsize=7,
+                color="#5A316B",
+                ha="center",
+            )
+            ax.text(
+                gauge_x - 0.28,
+                gauge_y + 0.55,
+                "ty",
+                fontsize=7,
+                color="#5A316B",
+                va="center",
+            )
+            ax.text(
+                gauge_x + 0.50,
+                gauge_y + 0.55,
+                "θ",
+                fontsize=7,
+                color="#5A316B",
+                ha="center",
+            )
+
+        if state.get("show_equal_cost"):
+            ax.text(
+                0.50,
+                0.025,
+                "Frel(A) = Frel(B) = Frel(C)",
+                transform=ax.transAxes,
+                fontsize=8.3,
+                fontweight="bold",
+                ha="center",
+                va="bottom",
+                color="#5A316B",
+                bbox={
+                    "boxstyle": "round,pad=0.28",
+                    "fc": "white",
+                    "ec": "#8E5EA2",
+                    "alpha": 0.95,
+                },
+            )
+        else:
+            ax.text(
+                0.50,
+                0.025,
+                "Las aristas observan relaciones, no coordenadas absolutas",
+                transform=ax.transAxes,
+                fontsize=7.5,
+                ha="center",
+                va="bottom",
+                color="#555555",
+            )
+
+    def _dibujar_factor_prior(self, ax, state, x0_pose):
+        """Dibuja el factor unario y su conexión con x0."""
+
+        prior_pose = state.get("prior_pose", [0.0, 0.0, 0.0])
+        factor_x = prior_pose[0] - 0.78
+        factor_y = prior_pose[1] - 0.75
+
+        rectangle = Rectangle(
+            (factor_x - 0.40, factor_y - 0.25),
+            0.80,
+            0.50,
+            facecolor="#F6B4B4",
+            edgecolor="#8B0000",
+            linewidth=2.0,
+            zorder=50,
+        )
+        ax.add_patch(rectangle)
+        ax.text(
+            factor_x,
+            factor_y + 0.06,
+            "PRIOR",
+            fontsize=7.7,
+            fontweight="bold",
+            ha="center",
+            va="center",
+            color="#8B0000",
+            zorder=51,
+        )
+        ax.text(
+            factor_x,
+            factor_y - 0.10,
+            "x0 = (0,0,0)",
+            fontsize=5.9,
+            ha="center",
+            va="center",
+            color="#4A0000",
+            zorder=51,
+        )
+        ax.plot(
+            [factor_x + 0.40, x0_pose[0]],
+            [factor_y, x0_pose[1]],
+            color="#C62828",
+            linewidth=2.3,
+            zorder=48,
+        )
+
+    def _dibujar_con_prior(self, ax, state):
+        """Dibuja la comparación con el factor prior activado."""
+
+        ax.clear()
+        limits = self._limites_comunes_prior(state)
+        ax.set_xlim(limits[0], limits[1])
+        ax.set_ylim(limits[2], limits[3])
+        ax.set_aspect("equal", adjustable="box")
+        ax.grid(True, alpha=0.14)
+        ax.set_title(
+            "Con prior: x0 define el marco del mapa",
+            fontsize=11.5,
+            fontweight="bold",
+        )
+        ax.set_xlabel("x mundial [m]", fontsize=8)
+        ax.set_ylabel("y mundial [m]", fontsize=8)
+        ax.tick_params(labelsize=7)
+
+        original = self._obtener_configuracion_prior(state, "A")
+        translated = self._obtener_configuracion_prior(state, "B")
+        rotated = self._obtener_configuracion_prior(state, "C")
+
+        self._dibujar_ejes_mundo_prior(ax)
+
+        if original and state.get("show_original"):
+            self._dibujar_pose_graph_prior(
+                ax,
+                state,
+                original["poses"],
+                "#B7E4C7" if state.get("show_prior") else "#D9D9D9",
+                "#2E8B57" if state.get("show_prior") else "#777777",
+                "A·",
+                alpha=0.98,
+                anchored_x0=state.get("show_prior", False),
+                zorder=25,
+            )
+
+        if state.get("show_translated") and translated:
+            self._dibujar_pose_graph_prior(
+                ax,
+                state,
+                translated["poses"],
+                "#FBE5A6",
+                "#8A6D1D",
+                "B·",
+                alpha=0.34 if state.get("show_prior") else 0.58,
+                line_style="dashed",
+                zorder=11,
+            )
+
+        if state.get("show_rotated") and rotated:
+            self._dibujar_pose_graph_prior(
+                ax,
+                state,
+                rotated["poses"],
+                "#E8D7F1",
+                "#8E5EA2",
+                "C·",
+                alpha=0.34 if state.get("show_prior") else 0.58,
+                line_style="dashed",
+                zorder=10,
+            )
+
+        if state.get("show_prior") and original:
+            self._dibujar_factor_prior(
+                ax,
+                state,
+                original["poses"]["x0"],
+            )
+
+        if state.get("show_prior_costs"):
+            prior_pose = state.get("prior_pose", [0.0, 0.0, 0.0])
+
+            for configuration, color in [
+                (translated, "#8A6D1D"),
+                (rotated, "#5A316B"),
+            ]:
+                if not configuration:
+                    continue
+
+                x0 = configuration["poses"]["x0"]
+                ax.plot(
+                    [prior_pose[0], x0[0]],
+                    [prior_pose[1], x0[1]],
+                    color=color,
+                    linewidth=1.8,
+                    linestyle="dotted",
+                    alpha=0.85,
+                    zorder=42,
+                )
+                ax.text(
+                    (prior_pose[0] + x0[0]) / 2,
+                    (prior_pose[1] + x0[1]) / 2 + 0.18,
+                    f"Fprior={configuration['prior_cost']:.1f}",
+                    fontsize=6.6,
+                    fontweight="bold",
+                    ha="center",
+                    va="bottom",
+                    color=color,
+                    zorder=43,
+                    bbox={
+                        "boxstyle": "round,pad=0.12",
+                        "fc": "white",
+                        "ec": color,
+                        "alpha": 0.90,
+                    },
+                )
+
+        if state.get("show_prior"):
+            ax.text(
+                0.50,
+                0.025,
+                "Solo A es compatible con el prior sin coste absoluto",
+                transform=ax.transAxes,
+                fontsize=8.1,
+                fontweight="bold",
+                ha="center",
+                va="bottom",
+                color="#8B0000",
+                bbox={
+                    "boxstyle": "round,pad=0.28",
+                    "fc": "white",
+                    "ec": "#C62828",
+                    "alpha": 0.95,
+                },
+            )
+        else:
+            ax.text(
+                0.50,
+                0.025,
+                "El sistema mundial todavía no está conectado al grafo",
+                transform=ax.transAxes,
+                fontsize=7.5,
+                ha="center",
+                va="bottom",
+                color="#555555",
+            )
+
+    def _dibujar_costes_prior(self, ax, state):
+        """Compara el coste relativo y el coste total de A, B y C."""
+
+        ax.clear()
+        ax.set_title(
+            "Mismo coste relativo, distinto coste total",
+            fontsize=9.7,
+            fontweight="bold",
+        )
+
+        if not state.get("show_cost_comparison"):
+            ax.axis("off")
+            ax.text(
+                0.50,
+                0.55,
+                "Cada arista aporta un término relativo.\n"
+                "El prior añadirá un término absoluto.",
+                fontsize=8.2,
+                ha="center",
+                va="center",
+                color="#555555",
+                bbox={
+                    "boxstyle": "round,pad=0.42",
+                    "fc": "white",
+                    "ec": "#999999",
+                },
+            )
+            return
+
+        configurations = state.get("configurations", [])
+        labels = [configuration.get("id", "?") for configuration in configurations]
+        relative_costs = [
+            max(configuration.get("relative_cost", 0.0), 1e-5)
+            for configuration in configurations
+        ]
+        total_costs = [
+            max(configuration.get("total_cost", 0.0), 1e-5)
+            for configuration in configurations
+        ]
+        positions = list(range(len(configurations)))
+
+        ax.bar(
+            [position - 0.18 for position in positions],
+            relative_costs,
+            width=0.34,
+            label="F relativo",
+            color="#4C9ED9",
+            edgecolor="#1F4F73",
+            linewidth=1.0,
+        )
+        ax.bar(
+            [position + 0.18 for position in positions],
+            total_costs,
+            width=0.34,
+            label="F total con prior",
+            color="#F6C85F",
+            edgecolor="#8A6D1D",
+            linewidth=1.0,
+        )
+
+        ax.set_yscale("log")
+        minimum_cost = min(relative_costs + total_costs)
+        maximum_cost = max(relative_costs + total_costs)
+        ax.set_ylim(max(minimum_cost * 0.55, 1e-6), maximum_cost * 4.0)
+        ax.set_xticks(positions, labels)
+        ax.set_ylabel("coste (escala log)", fontsize=7.5)
+        ax.tick_params(labelsize=7)
+        ax.grid(True, axis="y", alpha=0.20)
+        ax.legend(fontsize=6.8, loc="upper left", ncol=2)
+
+        for position, configuration in zip(positions, configurations):
+            ax.text(
+                position - 0.18,
+                relative_costs[position] * 1.25,
+                f"{configuration.get('relative_cost', 0.0):.3f}",
+                fontsize=6.0,
+                ha="center",
+                va="bottom",
+                rotation=90,
+            )
+            ax.text(
+                position + 0.18,
+                total_costs[position] * 1.20,
+                f"{configuration.get('total_cost', 0.0):.1f}",
+                fontsize=6.0,
+                ha="center",
+                va="bottom",
+                rotation=90,
+            )
+
+    def _dibujar_algebra_prior(self, ax, state):
+        """Muestra invariancia, rango, nulidad y conexiones externas."""
+
+        ax.clear()
+        ax.axis("off")
+        ax.set_xlim(0, 1)
+        ax.set_ylim(0, 1)
+
+        ax.text(
+            0.50,
+            0.955,
+            "Observabilidad y anclaje",
+            fontsize=9.7,
+            fontweight="bold",
+            ha="center",
+            va="top",
+        )
+
+        ax.text(
+            0.04,
+            0.805,
+            r"Sin prior:  $F_{rel}(g\oplus X)=F_{rel}(X)$",
+            fontsize=8.2,
+            ha="left",
+            va="center",
+            color="#5A316B",
+        )
+
+        if state.get("show_rank_without"):
+            left_text = (
+                f"J: {tuple(state.get('shape_without_prior', []))}\n"
+                f"rango: {state.get('rank_without_prior', 0)}\n"
+                f"nulidad: {state.get('nullity_without_prior', 0)}"
+            )
+        else:
+            left_text = "J relativo\n3 direcciones globales\naún no observables"
+
+        if state.get("show_rank_with"):
+            right_text = (
+                f"J: {tuple(state.get('shape_with_prior', []))}\n"
+                f"rango: {state.get('rank_with_prior', 0)}\n"
+                f"nulidad: {state.get('nullity_with_prior', 0)}"
+            )
+        else:
+            right_text = "J con prior\nse mostrará al conectar\nel factor absoluto"
+
+        cards = [
+            (0.06, 0.43, "SIN PRIOR", left_text, "#FCE6D4", "#F28E2B"),
+            (0.54, 0.43, "CON PRIOR", right_text, "#DDF1E5", "#2E8B57"),
+        ]
+
+        for x, y, title, body, face_color, edge_color in cards:
+            rectangle = Rectangle(
+                (x, y),
+                0.40,
+                0.27,
+                facecolor=face_color,
+                edgecolor=edge_color,
+                linewidth=1.5,
+            )
+            ax.add_patch(rectangle)
+            ax.text(
+                x + 0.20,
+                y + 0.225,
+                title,
+                fontsize=7.7,
+                fontweight="bold",
+                ha="center",
+                va="center",
+            )
+            ax.text(
+                x + 0.20,
+                y + 0.105,
+                body,
+                fontsize=6.9,
+                ha="center",
+                va="center",
+                linespacing=1.35,
+            )
+
+        if state.get("show_connections"):
+            labels = ["origen mapa", "landmark", "GPS", "Graph SLAM"]
+            starts = [0.05, 0.285, 0.52, 0.755]
+
+            for x, label in zip(starts, labels):
+                rectangle = Rectangle(
+                    (x, 0.105),
+                    0.19,
+                    0.17,
+                    facecolor="#F4F4F4",
+                    edgecolor="#666666",
+                    linewidth=1.1,
+                )
+                ax.add_patch(rectangle)
+                ax.text(
+                    x + 0.095,
+                    0.19,
+                    label,
+                    fontsize=6.5,
+                    fontweight="bold",
+                    ha="center",
+                    va="center",
+                )
+
+            ax.text(
+                0.50,
+                0.045,
+                "Un prior de gauge elige coordenadas; un prior físico aporta una observación absoluta.",
+                fontsize=6.7,
+                ha="center",
+                va="center",
+                color="#444444",
+            )
+        else:
+            norms = state.get("gauge_projection_norms", {})
+            ax.text(
+                0.50,
+                0.185,
+                (
+                    "||J·tx|| = "
+                    f"{norms.get('translation_x', 0.0):.1e}   ·   "
+                    "||J·ty|| = "
+                    f"{norms.get('translation_y', 0.0):.1e}   ·   "
+                    "||J·rot|| = "
+                    f"{norms.get('rotation', 0.0):.1e}"
+                ),
+                fontsize=6.8,
+                ha="center",
+                va="center",
+                color="#5A316B",
+            )
+            ax.text(
+                0.50,
+                0.070,
+                "El prior añade tres ecuaciones y elimina el gauge de SE(2).",
+                fontsize=7.1,
+                fontweight="bold",
+                ha="center",
+                va="center",
+                color="#1F4F73",
+            )
+
+    def _dibujar_estado_prior_anclaje(
+        self,
+        info_ax,
+        without_prior_ax,
+        with_prior_ax,
+        cost_ax,
+        algebra_ax,
+        state,
+    ):
+        """Dibuja un fotograma completo del apartado 5.5."""
+
+        self._dibujar_panel_prior(info_ax, state)
+        self._dibujar_sin_prior(without_prior_ax, state)
+        self._dibujar_con_prior(with_prior_ax, state)
+        self._dibujar_costes_prior(cost_ax, state)
+        self._dibujar_algebra_prior(algebra_ax, state)
+
+    def animate_prior_graph_anchoring(
+        self,
+        graph_without_prior,
+        graph_with_prior,
+        states,
+        title="Priors y anclaje del grafo",
+        final_image_path=None,
+        repeat=False,
+    ):
+        """
+        Anima un pose graph antes y después de añadir un prior.
+
+        La imagen final muestra:
+        - varias copias globales con el mismo coste relativo;
+        - la traslación y la rotación de gauge de SE(2);
+        - un factor prior unario conectado a x0;
+        - el coste absoluto de las copias incompatibles;
+        - rango y nulidad antes y después del anclaje.
+        """
+
+        if not states:
+            raise ValueError(
+                "La lista de estados de priors y anclaje no puede estar vacía."
+            )
+
+        if graph_without_prior.is_directed() or graph_with_prior.is_directed():
+            raise ValueError("Los pose graphs del ejemplo deben ser no dirigidos.")
+
+        required_poses = {"x0", "x1", "x2", "x3"}
+
+        if not required_poses.issubset(graph_without_prior.nodes()):
+            raise ValueError("El grafo relativo debe contener x0, x1, x2 y x3.")
+        if "prior_x0" not in graph_with_prior.nodes():
+            raise ValueError("El grafo anclado debe contener prior_x0.")
+        if not graph_with_prior.has_edge("prior_x0", "x0"):
+            raise ValueError("El factor prior debe estar conectado a x0.")
+
+        (
+            fig,
+            info_ax,
+            without_prior_ax,
+            with_prior_ax,
+            cost_ax,
+            algebra_ax,
+        ) = self._preparar_figura_prior_anclaje(title)
+
+        if final_image_path is not None:
+            self._dibujar_estado_prior_anclaje(
+                info_ax=info_ax,
+                without_prior_ax=without_prior_ax,
+                with_prior_ax=with_prior_ax,
+                cost_ax=cost_ax,
+                algebra_ax=algebra_ax,
+                state=states[-1],
+            )
+
+            final_image_path = Path(final_image_path)
+            final_image_path.parent.mkdir(parents=True, exist_ok=True)
+            fig.savefig(final_image_path, dpi=200, bbox_inches="tight")
+            print(f"Imagen final guardada en: {final_image_path}")
+
+        def init():
+            self._dibujar_estado_prior_anclaje(
+                info_ax=info_ax,
+                without_prior_ax=without_prior_ax,
+                with_prior_ax=with_prior_ax,
+                cost_ax=cost_ax,
+                algebra_ax=algebra_ax,
+                state=states[0],
+            )
+            return []
+
+        def update(frame_index):
+            self._dibujar_estado_prior_anclaje(
+                info_ax=info_ax,
+                without_prior_ax=without_prior_ax,
+                with_prior_ax=with_prior_ax,
+                cost_ax=cost_ax,
+                algebra_ax=algebra_ax,
                 state=states[frame_index],
             )
             return []
