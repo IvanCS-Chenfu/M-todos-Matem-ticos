@@ -17,6 +17,7 @@ class GraphAnimator:
     - caminos mínimos con Dijkstra,
     - caminos mínimos con A*,
     - navegación en grid con A* y replanificación dinámica,
+    - planificación y ejecución de tareas robóticas,
     - caminos mínimos con Bellman-Ford,
     - caminos mínimos con Floyd-Warshall,
     - árboles de expansión mínima con Prim y Kruskal,
@@ -10725,6 +10726,1044 @@ class GraphAnimator:
                 state=states[frame_index],
                 start=start,
                 goal=goal,
+            )
+            return []
+
+        self.animation = FuncAnimation(
+            fig,
+            update,
+            frames=len(states),
+            init_func=init,
+            interval=self.interval,
+            repeat=repeat,
+            blit=False,
+        )
+
+        plt.show()
+        return self.animation
+    # ------------------------------------------------------------------
+    # Elementos específicos de planificación de tareas robóticas
+    # ------------------------------------------------------------------
+
+    def _preparar_figura_planificacion_tareas(self, title):
+        """
+        Crea una figura coherente con las animaciones anteriores.
+
+        Distribución:
+        - izquierda: estado de la misión, tarea destacada y leyenda;
+        - derecha superior: grafo dirigido de tareas;
+        - derecha inferior: línea temporal agrupada por recursos.
+        """
+
+        fig = plt.figure(figsize=self.figsize)
+
+        grid = fig.add_gridspec(
+            2,
+            2,
+            width_ratios=[1.85, 4.15],
+            height_ratios=[4.75, 1.75],
+            wspace=0.07,
+            hspace=0.09,
+        )
+
+        info_ax = fig.add_subplot(grid[:, 0])
+        graph_ax = fig.add_subplot(grid[0, 1])
+        timeline_ax = fig.add_subplot(grid[1, 1])
+
+        fig.suptitle(
+            title,
+            fontsize=15,
+            fontweight="bold",
+        )
+
+        fig.subplots_adjust(
+            left=0.025,
+            right=0.99,
+            top=0.93,
+            bottom=0.055,
+        )
+
+        return fig, graph_ax, info_ax, timeline_ax
+
+    def _dibujar_leyenda_planificacion_tareas(self, ax):
+        """Dibuja la leyenda de estados y dependencias."""
+
+        elementos = [
+            Line2D(
+                [0],
+                [0],
+                marker="o",
+                color="none",
+                markerfacecolor="#D9D9D9",
+                markeredgecolor="#666666",
+                markersize=8,
+                label="Pendiente",
+            ),
+            Line2D(
+                [0],
+                [0],
+                marker="o",
+                color="none",
+                markerfacecolor="#F6C85F",
+                markeredgecolor="#8A6D1D",
+                markersize=8,
+                label="Disponible",
+            ),
+            Line2D(
+                [0],
+                [0],
+                marker="o",
+                color="none",
+                markerfacecolor="#8E5EA2",
+                markeredgecolor="#5A316B",
+                markersize=8,
+                label="En ejecución",
+            ),
+            Line2D(
+                [0],
+                [0],
+                marker="o",
+                color="none",
+                markerfacecolor="#4C9ED9",
+                markeredgecolor="#1F4F73",
+                markersize=8,
+                label="Completada",
+            ),
+            Line2D(
+                [0],
+                [0],
+                marker="o",
+                color="none",
+                markerfacecolor="#F28E2B",
+                markeredgecolor="#8A4B08",
+                markersize=8,
+                label="Fallida",
+            ),
+            Line2D(
+                [0],
+                [0],
+                color="#2E8B57",
+                linewidth=3,
+                label="Dependencia satisfecha",
+            ),
+            Line2D(
+                [0],
+                [0],
+                color="#B8B8B8",
+                linewidth=2,
+                linestyle="dashed",
+                label="Rama no activada",
+            ),
+            Line2D(
+                [0],
+                [0],
+                color="#C62828",
+                linewidth=4,
+                label="Camino crítico final",
+            ),
+        ]
+
+        ax.legend(
+            handles=elementos,
+            loc="lower center",
+            bbox_to_anchor=(0.5, 0.02),
+            fontsize=6.6,
+            framealpha=0.97,
+            ncol=2,
+            columnspacing=0.65,
+            handlelength=1.9,
+            borderpad=0.50,
+        )
+
+    @staticmethod
+    def _abreviar_lista_tareas(values, maximum=5):
+        """Convierte una colección de tareas en una línea compacta."""
+
+        values = list(values)
+
+        if not values:
+            return "—"
+
+        visible = values[:maximum]
+        text = ", ".join(map(str, visible))
+
+        if len(values) > maximum:
+            text += f"  +{len(values) - maximum}"
+
+        return text
+
+    def _dibujar_panel_planificacion_tareas(
+        self,
+        ax,
+        graph,
+        state,
+    ):
+        """Dibuja métricas, listas y detalles de la tarea destacada."""
+
+        ax.clear()
+        ax.axis("off")
+        ax.set_xlim(0, 1)
+        ax.set_ylim(0, 1)
+
+        statuses = dict(state.get("statuses", {}))
+        available = sorted(state.get("available", set()))
+        running = sorted(state.get("running", set()))
+        completed = set(state.get("completed", set()))
+        failed = set(state.get("failed", set()))
+        focus_task = state.get("focus_task")
+        time = state.get("time", 0)
+        phase = state.get("phase", "execution")
+
+        ax.text(
+            0.50,
+            0.985,
+            "Estado de la misión",
+            fontsize=12,
+            fontweight="bold",
+            ha="center",
+            va="top",
+        )
+
+        phase_labels = {
+            "validation": "Validación del DAG",
+            "ready": "Tareas desbloqueadas",
+            "start": "Inicio",
+            "running": "Ejecución",
+            "completed": "Tarea completada",
+            "failure": "Fallo y recuperación",
+            "finished": "Finalización",
+            "summary": "Resumen final",
+        }
+
+        ax.text(
+            0.50,
+            0.945,
+            phase_labels.get(phase, phase),
+            fontsize=8.3,
+            ha="center",
+            va="top",
+            color="#444444",
+        )
+
+        summary_rectangle = Rectangle(
+            (0.07, 0.815),
+            0.86,
+            0.095,
+            facecolor="white",
+            edgecolor="#777777",
+            linewidth=1.3,
+        )
+        ax.add_patch(summary_rectangle)
+
+        ax.text(
+            0.13,
+            0.872,
+            f"t = {time}",
+            fontsize=10,
+            fontweight="bold",
+            ha="left",
+            va="center",
+        )
+
+        ax.text(
+            0.43,
+            0.872,
+            f"Disponibles: {len(available)}",
+            fontsize=7.4,
+            ha="left",
+            va="center",
+        )
+
+        ax.text(
+            0.43,
+            0.835,
+            f"En ejecución: {len(running)}",
+            fontsize=7.4,
+            ha="left",
+            va="center",
+        )
+
+        ax.text(
+            0.73,
+            0.872,
+            f"Completadas: {len(completed)}",
+            fontsize=7.4,
+            ha="left",
+            va="center",
+        )
+
+        ax.text(
+            0.73,
+            0.835,
+            f"Fallidas: {len(failed)}",
+            fontsize=7.4,
+            ha="left",
+            va="center",
+        )
+
+        if focus_task is None or focus_task not in graph:
+            focus_name = "Sin tarea destacada"
+            focus_category = "—"
+            focus_resource = "—"
+            focus_duration = "—"
+            focus_status = "—"
+            focus_remaining = "—"
+        else:
+            node_data = graph.nodes[focus_task]
+            focus_name = node_data.get("name", focus_task)
+            focus_category = node_data.get("category", "—")
+            focus_resource = node_data.get("resource", "—")
+            focus_duration = node_data.get("duration", "—")
+            focus_status = statuses.get(focus_task, "—")
+            focus_remaining = state.get("remaining", {}).get(
+                focus_task,
+                "—",
+            )
+
+        focus_rectangle = Rectangle(
+            (0.07, 0.610),
+            0.86,
+            0.170,
+            facecolor="#F7F7F7",
+            edgecolor="#777777",
+            linewidth=1.3,
+        )
+        ax.add_patch(focus_rectangle)
+
+        ax.text(
+            0.11,
+            0.752,
+            "Tarea destacada",
+            fontsize=8.2,
+            fontweight="bold",
+            ha="left",
+            va="center",
+        )
+
+        ax.text(
+            0.11,
+            0.713,
+            (
+                f"{focus_task or '—'} · {focus_name}"
+                if focus_task is not None
+                else focus_name
+            ),
+            fontsize=7.6,
+            fontweight="bold",
+            ha="left",
+            va="center",
+            wrap=True,
+        )
+
+        ax.text(
+            0.11,
+            0.672,
+            f"Estado: {focus_status}",
+            fontsize=7.0,
+            ha="left",
+            va="center",
+        )
+
+        ax.text(
+            0.56,
+            0.672,
+            f"Recurso: {focus_resource}",
+            fontsize=7.0,
+            ha="left",
+            va="center",
+        )
+
+        ax.text(
+            0.11,
+            0.632,
+            f"Categoría: {focus_category}",
+            fontsize=7.0,
+            ha="left",
+            va="center",
+        )
+
+        ax.text(
+            0.56,
+            0.632,
+            f"Duración/restante: {focus_duration}/{focus_remaining}",
+            fontsize=6.9,
+            ha="left",
+            va="center",
+        )
+
+        list_specs = [
+            (
+                "Disponibles",
+                available,
+                0.545,
+                "#FBE5A6",
+                "#8A6D1D",
+            ),
+            (
+                "En ejecución",
+                running,
+                0.455,
+                "#E8D7F1",
+                "#5A316B",
+            ),
+            (
+                "Últimas finalizadas",
+                list(state.get("execution_order", []))[-5:],
+                0.365,
+                "#DDECF7",
+                "#1F4F73",
+            ),
+        ]
+
+        for label, values, y, face_color, edge_color in list_specs:
+            rectangle = Rectangle(
+                (0.07, y - 0.055),
+                0.86,
+                0.075,
+                facecolor=face_color,
+                edgecolor=edge_color,
+                linewidth=1.1,
+            )
+            ax.add_patch(rectangle)
+
+            ax.text(
+                0.10,
+                y,
+                f"{label}: ",
+                fontsize=6.9,
+                fontweight="bold",
+                ha="left",
+                va="center",
+            )
+
+            ax.text(
+                0.34,
+                y,
+                self._abreviar_lista_tareas(values),
+                fontsize=6.8,
+                ha="left",
+                va="center",
+            )
+
+        total_duration = state.get("total_duration")
+        critical_path = list(state.get("critical_path", []))
+
+        if total_duration is not None:
+            result_text = (
+                f"Duración total: {total_duration} unidades\n"
+                f"Camino crítico activo: {len(critical_path)} tareas\n"
+                "Incluye la rama de recuperación"
+            )
+        else:
+            result_text = (
+                f"Tareas: {graph.number_of_nodes()}\n"
+                f"Dependencias: {graph.number_of_edges()}\n"
+                "DAG válido: sí"
+            )
+
+        ax.text(
+            0.50,
+            0.245,
+            result_text,
+            fontsize=7.1,
+            ha="center",
+            va="center",
+            linespacing=1.45,
+            bbox={
+                "boxstyle": "round,pad=0.40",
+                "fc": "white",
+                "ec": "#777777",
+                "alpha": 0.98,
+            },
+        )
+
+        self._dibujar_leyenda_planificacion_tareas(ax)
+
+    def _dibujar_flecha_planificacion_tareas(
+        self,
+        ax,
+        pos,
+        origin,
+        destination,
+        color,
+        line_width,
+        line_style,
+        zorder,
+        curvature=0.0,
+    ):
+        """Dibuja una dependencia dirigida evitando tapar los nodos."""
+
+        x1, y1 = pos[origin]
+        x2, y2 = pos[destination]
+
+        arrow = FancyArrowPatch(
+            (x1, y1),
+            (x2, y2),
+            arrowstyle="-|>",
+            mutation_scale=14,
+            linewidth=line_width,
+            linestyle=line_style,
+            color=color,
+            shrinkA=17,
+            shrinkB=17,
+            connectionstyle=f"arc3,rad={curvature}",
+            zorder=zorder,
+        )
+        ax.add_patch(arrow)
+
+    def _dibujar_etiqueta_dependencia_tarea(
+        self,
+        ax,
+        pos,
+        origin,
+        destination,
+        label,
+        curvature=0.0,
+    ):
+        """Añade la etiqueta éxito/fallo de una arista condicional."""
+
+        if not label:
+            return
+
+        x1, y1 = pos[origin]
+        x2, y2 = pos[destination]
+
+        middle_x = (x1 + x2) / 2
+        middle_y = (y1 + y2) / 2
+
+        dx = x2 - x1
+        dy = y2 - y1
+        length = max((dx**2 + dy**2) ** 0.5, 1e-9)
+
+        offset_x = -dy / length * 0.15
+        offset_y = dx / length * 0.15
+
+        if curvature != 0:
+            offset_y += 0.42 if curvature < 0 else -0.42
+
+        ax.text(
+            middle_x + offset_x,
+            middle_y + offset_y,
+            label,
+            fontsize=6.6,
+            fontweight="bold",
+            ha="center",
+            va="center",
+            color="#333333",
+            zorder=35,
+            bbox={
+                "boxstyle": "round,pad=0.16",
+                "fc": "white",
+                "ec": "#999999",
+                "alpha": 0.96,
+            },
+        )
+
+    def _dibujar_grafo_planificacion_tareas(
+        self,
+        ax,
+        graph,
+        pos,
+        state,
+    ):
+        """Dibuja el DAG y el estado dinámico de todas sus tareas."""
+
+        ax.clear()
+        ax.axis("off")
+
+        limits = self._calcular_limites(
+            pos,
+            margin_x=0.85,
+            margin_y=0.90,
+        )
+
+        ax.set_xlim(limits[0], limits[1])
+        ax.set_ylim(limits[2], limits[3])
+        ax.set_aspect("auto", adjustable="box")
+
+        statuses = dict(state.get("statuses", {}))
+        satisfied_edges = set(state.get("satisfied_edges", set()))
+        triggered_edges = set(
+            state.get("triggered_condition_edges", set())
+        )
+        inactive_edges = set(
+            state.get("inactive_condition_edges", set())
+        )
+        recent_edges = set(state.get("recent_edges", set()))
+        critical_edges = set(state.get("critical_edges", set()))
+        critical_nodes = set(state.get("critical_nodes", set()))
+        focus_task = state.get("focus_task")
+        phase = state.get("phase", "execution")
+
+        curvature_map = {
+            ("VAG1", "PLT"): -0.20,
+            ("VAG1", "REC1"): 0.10,
+            ("VAG2", "PLT"): 0.12,
+        }
+
+        for origin, destination, data in graph.edges(data=True):
+            edge = (origin, destination)
+            condition = data.get("condition", "siempre")
+            curvature = curvature_map.get(edge, 0.0)
+
+            if phase == "summary" and edge in critical_edges:
+                color = "#C62828"
+                line_width = 4.0
+                line_style = "solid"
+                zorder = 24
+            elif edge in recent_edges:
+                color = "#2E8B57"
+                line_width = 4.2
+                line_style = "solid"
+                zorder = 23
+            elif edge in inactive_edges:
+                color = "#B8B8B8"
+                line_width = 1.7
+                line_style = "dashed"
+                zorder = 9
+            elif edge in triggered_edges:
+                color = "#2E8B57"
+                line_width = 3.2
+                line_style = "solid"
+                zorder = 18
+            elif edge in satisfied_edges:
+                color = "#2E8B57"
+                line_width = 2.6
+                line_style = "solid"
+                zorder = 15
+            elif condition != "siempre":
+                color = "#AFAFAF"
+                line_width = 1.6
+                line_style = "dashed"
+                zorder = 10
+            else:
+                color = "#B8B8B8"
+                line_width = 1.45
+                line_style = "solid"
+                zorder = 10
+
+            self._dibujar_flecha_planificacion_tareas(
+                ax=ax,
+                pos=pos,
+                origin=origin,
+                destination=destination,
+                color=color,
+                line_width=line_width,
+                line_style=line_style,
+                zorder=zorder,
+                curvature=curvature,
+            )
+
+            self._dibujar_etiqueta_dependencia_tarea(
+                ax=ax,
+                pos=pos,
+                origin=origin,
+                destination=destination,
+                label=data.get("label", ""),
+                curvature=curvature,
+            )
+
+        status_style = {
+            "pendiente": ("#D9D9D9", "#666666"),
+            "disponible": ("#F6C85F", "#8A6D1D"),
+            "en_ejecucion": ("#8E5EA2", "#5A316B"),
+            "completada": ("#4C9ED9", "#1F4F73"),
+            "fallida": ("#F28E2B", "#8A4B08"),
+        }
+
+        for node in graph.nodes():
+            status = statuses.get(node, "pendiente")
+            face_color, edge_color = status_style.get(
+                status,
+                ("#D9D9D9", "#666666"),
+            )
+
+            node_size = 720
+            line_width = 1.5
+
+            if node == focus_task:
+                edge_color = "#C62828"
+                node_size = 900
+                line_width = 2.8
+            elif phase == "summary" and node in critical_nodes:
+                edge_color = "#C62828"
+                node_size = 790
+                line_width = 2.6
+
+            collection = nx.draw_networkx_nodes(
+                graph,
+                pos,
+                nodelist=[node],
+                node_size=node_size,
+                node_color=face_color,
+                edgecolors=edge_color,
+                linewidths=line_width,
+                ax=ax,
+            )
+            collection.set_zorder(28)
+
+        remaining = dict(state.get("remaining", {}))
+
+        for node, (x, y) in pos.items():
+            ax.text(
+                x,
+                y,
+                str(node),
+                fontsize=7.3,
+                fontweight="bold",
+                ha="center",
+                va="center",
+                color="black",
+                zorder=35,
+            )
+
+            ax.text(
+                x,
+                y - 0.42,
+                graph.nodes[node].get("short_name", node),
+                fontsize=5.8,
+                ha="center",
+                va="top",
+                color="#222222",
+                zorder=36,
+            )
+
+            duration = graph.nodes[node].get("duration", 0)
+            status = statuses.get(node, "pendiente")
+
+            if status == "en_ejecucion":
+                upper_label = (
+                    f"rest={remaining.get(node, duration)}"
+                )
+            else:
+                upper_label = f"d={duration}"
+
+            ax.text(
+                x,
+                y + 0.37,
+                upper_label,
+                fontsize=5.9,
+                fontweight="bold",
+                ha="center",
+                va="bottom",
+                color="#222222",
+                zorder=38,
+                bbox={
+                    "boxstyle": "round,pad=0.14",
+                    "fc": "white",
+                    "ec": "#777777",
+                    "alpha": 0.96,
+                },
+            )
+
+        ax.text(
+            0.50,
+            0.012,
+            state.get("message", ""),
+            transform=ax.transAxes,
+            fontsize=8.6,
+            ha="center",
+            va="bottom",
+            bbox={
+                "boxstyle": "round,pad=0.38",
+                "fc": "white",
+                "ec": "#777777",
+                "alpha": 0.96,
+            },
+            zorder=50,
+        )
+
+        status_text = (
+            f"t={state.get('time', 0)}"
+            f"  ·  disponibles={len(state.get('available', set()))}"
+            f"  ·  ejecutándose={len(state.get('running', set()))}"
+            f"  ·  completadas={len(state.get('completed', set()))}"
+            f"  ·  fallidas={len(state.get('failed', set()))}"
+        )
+
+        ax.text(
+            0.995,
+            0.985,
+            status_text,
+            transform=ax.transAxes,
+            fontsize=7.8,
+            ha="right",
+            va="top",
+            bbox={
+                "boxstyle": "round,pad=0.28",
+                "fc": "white",
+                "ec": "#999999",
+                "alpha": 0.96,
+            },
+            zorder=50,
+        )
+
+        ax.text(
+            0.005,
+            0.985,
+            "Vértice = tarea  ·  Flecha = dependencia",
+            transform=ax.transAxes,
+            fontsize=7.5,
+            ha="left",
+            va="top",
+            color="#444444",
+            zorder=50,
+        )
+
+    def _dibujar_timeline_planificacion_tareas(
+        self,
+        ax,
+        graph,
+        state,
+    ):
+        """Dibuja una línea temporal compacta agrupada por recursos."""
+
+        ax.clear()
+
+        start_times = dict(state.get("start_times", {}))
+        end_times = dict(state.get("end_times", {}))
+        statuses = dict(state.get("statuses", {}))
+        current_time = state.get("time", 0)
+        total_duration = state.get("total_duration")
+
+        resource_order = list(
+            graph.graph.get(
+                "resource_order",
+                sorted(
+                    {
+                        data.get("resource", "recurso")
+                        for _, data in graph.nodes(data=True)
+                    }
+                ),
+            )
+        )
+        resource_labels = dict(
+            graph.graph.get("resource_labels", {})
+        )
+
+        estimated_end = max(
+            [
+                start_times.get(node, 0)
+                + graph.nodes[node].get("duration", 0)
+                for node in start_times
+            ]
+            + [current_time, 1]
+        )
+
+        x_max = max(total_duration or 0, estimated_end, 1)
+        x_margin = max(1.0, x_max * 0.025)
+
+        ax.set_xlim(-x_margin, x_max + x_margin)
+        ax.set_ylim(-0.65, len(resource_order) - 0.25)
+
+        ax.set_yticks(range(len(resource_order)))
+        ax.set_yticklabels(
+            [
+                resource_labels.get(resource, resource)
+                for resource in resource_order
+            ],
+            fontsize=7.2,
+        )
+
+        tick_step = 1 if x_max <= 18 else 2 if x_max <= 36 else 5
+        ax.set_xticks(range(0, int(x_max) + 1, tick_step))
+        ax.tick_params(axis="x", labelsize=6.8)
+        ax.grid(axis="x", alpha=0.20, linewidth=0.7)
+        ax.set_xlabel("Tiempo simulado", fontsize=7.5)
+        ax.set_title(
+            "Uso de recursos y paralelismo",
+            fontsize=10.2,
+            fontweight="bold",
+            pad=4,
+        )
+
+        for spine in ("top", "right"):
+            ax.spines[spine].set_visible(False)
+
+        resource_to_y = {
+            resource: index
+            for index, resource in enumerate(resource_order)
+        }
+
+        bar_colors = {
+            "en_ejecucion": "#8E5EA2",
+            "completada": "#4C9ED9",
+            "fallida": "#F28E2B",
+            "disponible": "#F6C85F",
+        }
+
+        for node, start_time in sorted(
+            start_times.items(),
+            key=lambda item: (item[1], item[0]),
+        ):
+            duration = graph.nodes[node].get("duration", 0)
+            resource = graph.nodes[node].get("resource")
+
+            if duration <= 0 or resource not in resource_to_y:
+                continue
+
+            y = resource_to_y[resource]
+            planned_end = start_time + duration
+            actual_end = end_times.get(node, planned_end)
+            width = max(actual_end - start_time, 0.15)
+            status = statuses.get(node, "en_ejecucion")
+
+            rectangle = Rectangle(
+                (start_time, y - 0.28),
+                width,
+                0.56,
+                facecolor=bar_colors.get(status, "#D9D9D9"),
+                edgecolor="#555555",
+                linewidth=1.0,
+                alpha=0.92,
+            )
+            ax.add_patch(rectangle)
+
+            ax.text(
+                start_time + width / 2,
+                y,
+                node,
+                fontsize=6.0,
+                fontweight="bold",
+                ha="center",
+                va="center",
+                color="black",
+            )
+
+        ax.axvline(
+            current_time,
+            color="#C62828",
+            linewidth=2.0,
+            linestyle="--",
+            zorder=15,
+        )
+
+        ax.text(
+            current_time,
+            len(resource_order) - 0.38,
+            f"t={current_time}",
+            fontsize=6.7,
+            fontweight="bold",
+            ha="center",
+            va="top",
+            color="#C62828",
+            bbox={
+                "boxstyle": "round,pad=0.16",
+                "fc": "white",
+                "ec": "#C62828",
+                "alpha": 0.95,
+            },
+        )
+
+    def _dibujar_estado_planificacion_tareas(
+        self,
+        graph_ax,
+        info_ax,
+        timeline_ax,
+        graph,
+        pos,
+        state,
+    ):
+        """Dibuja un estado completo de la planificación de tareas."""
+
+        self._dibujar_grafo_planificacion_tareas(
+            ax=graph_ax,
+            graph=graph,
+            pos=pos,
+            state=state,
+        )
+
+        self._dibujar_panel_planificacion_tareas(
+            ax=info_ax,
+            graph=graph,
+            state=state,
+        )
+
+        self._dibujar_timeline_planificacion_tareas(
+            ax=timeline_ax,
+            graph=graph,
+            state=state,
+        )
+
+    def animate_robot_task_planning(
+        self,
+        graph,
+        pos,
+        states,
+        title="Planificación de tareas de una misión robótica",
+        final_image_path=None,
+        repeat=False,
+    ):
+        """
+        Anima la ejecución de un grafo de tareas robóticas.
+
+        La demostración puede mostrar:
+        - validación del DAG;
+        - tareas disponibles y ejecución paralela;
+        - uso exclusivo de recursos;
+        - finalización y desbloqueo de sucesores;
+        - fallo controlado y rama de recuperación;
+        - camino crítico activo y duración total.
+        """
+
+        if not states:
+            raise ValueError(
+                "La lista de estados de planificación no puede estar vacía."
+            )
+
+        if not graph.is_directed():
+            raise ValueError("El grafo de tareas debe ser dirigido.")
+
+        (
+            fig,
+            graph_ax,
+            info_ax,
+            timeline_ax,
+        ) = self._preparar_figura_planificacion_tareas(title)
+
+        if final_image_path is not None:
+            self._dibujar_estado_planificacion_tareas(
+                graph_ax=graph_ax,
+                info_ax=info_ax,
+                timeline_ax=timeline_ax,
+                graph=graph,
+                pos=pos,
+                state=states[-1],
+            )
+
+            final_image_path = Path(final_image_path)
+            final_image_path.parent.mkdir(
+                parents=True,
+                exist_ok=True,
+            )
+
+            fig.savefig(
+                final_image_path,
+                dpi=200,
+                bbox_inches="tight",
+            )
+
+            print(f"Imagen final guardada en: {final_image_path}")
+
+        def init():
+            self._dibujar_estado_planificacion_tareas(
+                graph_ax=graph_ax,
+                info_ax=info_ax,
+                timeline_ax=timeline_ax,
+                graph=graph,
+                pos=pos,
+                state=states[0],
+            )
+            return []
+
+        def update(frame_index):
+            self._dibujar_estado_planificacion_tareas(
+                graph_ax=graph_ax,
+                info_ax=info_ax,
+                timeline_ax=timeline_ax,
+                graph=graph,
+                pos=pos,
+                state=states[frame_index],
             )
             return []
 
