@@ -1,10 +1,11 @@
+from math import cos, degrees, pi, sin
 from pathlib import Path
 
 import matplotlib.pyplot as plt
 import networkx as nx
 from matplotlib.animation import FuncAnimation
 from matplotlib.lines import Line2D
-from matplotlib.patches import FancyArrowPatch, Rectangle
+from matplotlib.patches import Arc, Ellipse, FancyArrowPatch, Rectangle
 
 
 class GraphAnimator:
@@ -18,6 +19,7 @@ class GraphAnimator:
     - caminos mínimos con A*,
     - navegación en grid con A* y replanificación dinámica,
     - planificación y ejecución de tareas robóticas,
+    - restricciones relativas entre poses y transición a Graph SLAM,
     - caminos mínimos con Bellman-Ford,
     - caminos mínimos con Floyd-Warshall,
     - árboles de expansión mínima con Prim y Kruskal,
@@ -11763,6 +11765,1439 @@ class GraphAnimator:
                 timeline_ax=timeline_ax,
                 graph=graph,
                 pos=pos,
+                state=states[frame_index],
+            )
+            return []
+
+        self.animation = FuncAnimation(
+            fig,
+            update,
+            frames=len(states),
+            init_func=init,
+            interval=self.interval,
+            repeat=repeat,
+            blit=False,
+        )
+
+        plt.show()
+        return self.animation
+    # ------------------------------------------------------------------
+    # Restricción básica entre dos poses SE(2)
+    # ------------------------------------------------------------------
+
+    def _preparar_figura_restriccion_pose(self, title):
+        """
+        Crea una distribución comparable a las animaciones anteriores.
+
+        Distribución:
+        - izquierda: explicación y leyenda;
+        - centro superior: interpretación geométrica;
+        - derecha superior: grafo de restricciones;
+        - zona inferior: medición, predicción, residuo y coste.
+        """
+
+        fig = plt.figure(figsize=self.figsize)
+
+        grid = fig.add_gridspec(
+            2,
+            3,
+            width_ratios=[1.62, 4.15, 2.35],
+            height_ratios=[4.75, 1.65],
+            wspace=0.09,
+            hspace=0.12,
+        )
+
+        info_ax = fig.add_subplot(grid[:, 0])
+        geometry_ax = fig.add_subplot(grid[0, 1])
+        graph_ax = fig.add_subplot(grid[0, 2])
+        calculation_ax = fig.add_subplot(grid[1, 1:])
+
+        fig.suptitle(
+            title,
+            fontsize=16,
+            fontweight="bold",
+        )
+
+        fig.subplots_adjust(
+            left=0.025,
+            right=0.985,
+            top=0.925,
+            bottom=0.045,
+        )
+
+        return fig, geometry_ax, graph_ax, info_ax, calculation_ax
+
+    @staticmethod
+    def _formatear_pose_restriccion(pose, decimals=2):
+        """Formatea (x, y, theta) usando metros y grados."""
+
+        if pose is None:
+            return "—"
+
+        return (
+            f"({pose[0]:.{decimals}f} m, "
+            f"{pose[1]:.{decimals}f} m, "
+            f"{degrees(pose[2]):.{decimals}f}°)"
+        )
+
+    @staticmethod
+    def _formatear_vector_restriccion(vector, decimals=3):
+        """Formatea un vector de residuo con el ángulo en grados."""
+
+        if vector is None:
+            return "—"
+
+        return (
+            f"({vector[0]:.{decimals}f}, "
+            f"{vector[1]:.{decimals}f}, "
+            f"{degrees(vector[2]):.{decimals}f}°)"
+        )
+
+    @staticmethod
+    def _titulo_fase_restriccion(phase):
+        """Traduce la clave de fase a un título breve."""
+
+        titles = {
+            "normal_graph": "1. Arista como conexión",
+            "constraint_graph": "2. Arista como restricción",
+            "pose_x0": "3. Pose de referencia x0",
+            "pose_x1": "4. Estimación actual x1",
+            "measurement": "5. Medición relativa z01",
+            "prediction": "6. Predicción de las poses",
+            "translation_residual": "7. Error de traslación",
+            "angular_residual": "8. Error angular",
+            "uncertainty": "9. Incertidumbre e información",
+            "cost": "10. Coste de la arista",
+            "prior": "11. Prior y libertad gauge",
+            "correction": "12. Corrección de x1",
+            "comparison": "13. Comparación final",
+            "pose_graph_preview": "14. De dos poses a Pose Graph",
+            "summary": "15. Idea final",
+        }
+
+        return titles.get(phase, str(phase))
+
+    def _dibujar_leyenda_restriccion_pose(self, ax):
+        """Dibuja una leyenda compacta en el panel izquierdo."""
+
+        elements = [
+            Line2D(
+                [0],
+                [0],
+                marker="o",
+                color="none",
+                markerfacecolor="#4C9ED9",
+                markeredgecolor="#1F4F73",
+                markersize=8,
+                label="x0: pose fija",
+            ),
+            Line2D(
+                [0],
+                [0],
+                marker="o",
+                color="none",
+                markerfacecolor="#F28E2B",
+                markeredgecolor="#8A4B08",
+                markersize=8,
+                label="x1: estimación actual",
+            ),
+            Line2D(
+                [0],
+                [0],
+                marker="o",
+                color="none",
+                markerfacecolor="white",
+                markeredgecolor="#2E8B57",
+                markersize=8,
+                label="x1*: pose esperada",
+            ),
+            Line2D(
+                [0],
+                [0],
+                color="#2E8B57",
+                linewidth=3,
+                label="Medición z01",
+            ),
+            Line2D(
+                [0],
+                [0],
+                color="#8E5EA2",
+                linewidth=3,
+                label="Predicción z_hat01",
+            ),
+            Line2D(
+                [0],
+                [0],
+                color="#D62728",
+                linewidth=3,
+                label="Residuo",
+            ),
+            Line2D(
+                [0],
+                [0],
+                color="#777777",
+                linewidth=2,
+                linestyle="dashed",
+                label="Estado inicial / histórico",
+            ),
+        ]
+
+        ax.legend(
+            handles=elements,
+            loc="lower center",
+            bbox_to_anchor=(0.5, 0.035),
+            fontsize=6.8,
+            framealpha=0.97,
+            ncol=1,
+            handlelength=2.4,
+            borderpad=0.55,
+            labelspacing=0.58,
+        )
+
+    def _dibujar_pose_restriccion(
+        self,
+        ax,
+        pose,
+        label,
+        face_color,
+        edge_color,
+        *,
+        alpha=1.0,
+        zorder=30,
+        radius=0.105,
+        label_offset=(0.0, -0.28),
+        line_style="solid",
+    ):
+        """Dibuja una pose como origen local con ejes x e y."""
+
+        x, y, theta = pose
+
+        body = Ellipse(
+            (x, y),
+            width=2.0 * radius,
+            height=2.0 * radius,
+            facecolor=face_color,
+            edgecolor=edge_color,
+            linewidth=2.1,
+            linestyle=line_style,
+            alpha=alpha,
+            zorder=zorder,
+        )
+        ax.add_patch(body)
+
+        axis_length = 0.42
+        side_length = 0.28
+
+        x_end = (
+            x + axis_length * cos(theta),
+            y + axis_length * sin(theta),
+        )
+        y_end = (
+            x - side_length * sin(theta),
+            y + side_length * cos(theta),
+        )
+
+        forward_arrow = FancyArrowPatch(
+            (x, y),
+            x_end,
+            arrowstyle="-|>",
+            mutation_scale=12,
+            linewidth=2.0,
+            linestyle=line_style,
+            color=edge_color,
+            alpha=alpha,
+            zorder=zorder + 1,
+        )
+        ax.add_patch(forward_arrow)
+
+        ax.plot(
+            [x, y_end[0]],
+            [y, y_end[1]],
+            color=edge_color,
+            linewidth=1.45,
+            linestyle=line_style,
+            alpha=alpha,
+            zorder=zorder,
+        )
+
+        ax.text(
+            x + label_offset[0],
+            y + label_offset[1],
+            label,
+            fontsize=8.1,
+            fontweight="bold",
+            ha="center",
+            va="top" if label_offset[1] < 0 else "bottom",
+            color=edge_color,
+            alpha=alpha,
+            zorder=zorder + 3,
+            bbox={
+                "boxstyle": "round,pad=0.18",
+                "fc": "white",
+                "ec": edge_color,
+                "alpha": 0.92 * alpha,
+            },
+        )
+
+    def _dibujar_flecha_transformacion_restriccion(
+        self,
+        ax,
+        start_pose,
+        end_pose,
+        color,
+        label,
+        *,
+        curvature=0.0,
+        line_width=3.0,
+        line_style="solid",
+        label_offset=(0.0, 0.0),
+        alpha=1.0,
+        zorder=18,
+    ):
+        """Dibuja una transformación entre posiciones de dos poses."""
+
+        start = (start_pose[0], start_pose[1])
+        end = (end_pose[0], end_pose[1])
+
+        arrow = FancyArrowPatch(
+            start,
+            end,
+            arrowstyle="-|>",
+            mutation_scale=16,
+            linewidth=line_width,
+            linestyle=line_style,
+            color=color,
+            alpha=alpha,
+            shrinkA=10,
+            shrinkB=10,
+            connectionstyle=f"arc3,rad={curvature}",
+            zorder=zorder,
+        )
+        ax.add_patch(arrow)
+
+        middle_x = (start[0] + end[0]) / 2 + label_offset[0]
+        middle_y = (start[1] + end[1]) / 2 + label_offset[1]
+
+        ax.text(
+            middle_x,
+            middle_y,
+            label,
+            fontsize=8.0,
+            fontweight="bold",
+            ha="center",
+            va="center",
+            color=color,
+            alpha=alpha,
+            zorder=zorder + 4,
+            bbox={
+                "boxstyle": "round,pad=0.20",
+                "fc": "white",
+                "ec": color,
+                "alpha": 0.93,
+            },
+        )
+
+    def _dibujar_elipse_incertidumbre_restriccion(
+        self,
+        ax,
+        expected_pose,
+        sigmas,
+    ):
+        """Dibuja una elipse de 2 sigma alrededor de la pose esperada."""
+
+        ellipse = Ellipse(
+            (expected_pose[0], expected_pose[1]),
+            width=4.0 * sigmas[0],
+            height=4.0 * sigmas[1],
+            angle=degrees(expected_pose[2]),
+            facecolor="#B7E4C7",
+            edgecolor="#2E8B57",
+            linewidth=1.8,
+            linestyle="dashed",
+            alpha=0.23,
+            zorder=8,
+        )
+        ax.add_patch(ellipse)
+
+        ax.text(
+            expected_pose[0] + 0.10,
+            expected_pose[1] + 0.68,
+            "incertidumbre 2σ",
+            fontsize=7.2,
+            fontweight="bold",
+            color="#2E8B57",
+            ha="center",
+            va="bottom",
+            zorder=20,
+        )
+
+    def _dibujar_prior_restriccion(self, ax, pose_x0):
+        """Dibuja un prior como una caja conectada con x0."""
+
+        x, y, _ = pose_x0
+        box_x = x - 0.35
+        box_y = y + 0.70
+
+        rectangle = Rectangle(
+            (box_x, box_y),
+            0.70,
+            0.30,
+            facecolor="#E5E5E5",
+            edgecolor="#555555",
+            linewidth=1.6,
+            zorder=35,
+        )
+        ax.add_patch(rectangle)
+
+        ax.text(
+            x,
+            box_y + 0.15,
+            "PRIOR\nx0 fija",
+            fontsize=7.1,
+            fontweight="bold",
+            ha="center",
+            va="center",
+            zorder=38,
+        )
+
+        arrow = FancyArrowPatch(
+            (x, box_y),
+            (x, y + 0.12),
+            arrowstyle="-|>",
+            mutation_scale=13,
+            linewidth=1.7,
+            color="#555555",
+            zorder=34,
+        )
+        ax.add_patch(arrow)
+
+    def _dibujar_panel_informacion_restriccion(self, ax, state):
+        """Muestra el concepto activo, la ecuación principal y la leyenda."""
+
+        ax.clear()
+        ax.axis("off")
+        ax.set_xlim(0, 1)
+        ax.set_ylim(0, 1)
+
+        phase = state.get("phase", "")
+        step = state.get("step", 0)
+        total_steps = state.get("total_steps", 0)
+
+        ax.text(
+            0.50,
+            0.985,
+            "De conexión a restricción",
+            fontsize=12.0,
+            fontweight="bold",
+            ha="center",
+            va="top",
+        )
+
+        ax.text(
+            0.50,
+            0.945,
+            f"Estado {step} de {total_steps}",
+            fontsize=8.0,
+            ha="center",
+            va="top",
+            color="#444444",
+        )
+
+        ax.text(
+            0.50,
+            0.885,
+            self._titulo_fase_restriccion(phase),
+            fontsize=10.1,
+            fontweight="bold",
+            ha="center",
+            va="top",
+            color="#1F4F73",
+            bbox={
+                "boxstyle": "round,pad=0.35",
+                "fc": "#EAF3F8",
+                "ec": "#1F4F73",
+                "alpha": 0.98,
+            },
+        )
+
+        equation_map = {
+            "normal_graph": r"$\mathrm{arista}=\mathrm{conexión}$",
+            "constraint_graph": r"$\mathrm{arista}=(z_{01},\Sigma_{01},\Omega_{01})$",
+            "pose_x0": r"$x_0=(x,y,\theta)$",
+            "pose_x1": r"$x_1=(x,y,\theta)$",
+            "measurement": r"$x_1^*=x_0\oplus z_{01}$",
+            "prediction": r"$\hat z_{01}=x_0^{-1}\oplus x_1$",
+            "translation_residual": r"$e_{01}=z_{01}^{-1}\oplus\hat z_{01}$",
+            "angular_residual": r"$e_\theta\in[-\pi,\pi)$",
+            "uncertainty": r"$\Omega_{01}=\Sigma_{01}^{-1}$",
+            "cost": r"$E_{01}=e_{01}^{T}\Omega_{01}e_{01}$",
+            "prior": r"$x_0=\bar{x}_0$",
+            "correction": r"$x_1\longrightarrow x_1^*$",
+            "comparison": r"$e_{01}\approx0,\quad E_{01}\approx0$",
+            "pose_graph_preview": r"$F(x)=\sum e_{ij}^{T}\Omega_{ij}e_{ij}$",
+            "summary": r"$\mathrm{arista}=\mathrm{medición}+\mathrm{incertidumbre}+\mathrm{error}$",
+        }
+
+        ax.text(
+            0.50,
+            0.785,
+            equation_map.get(phase, ""),
+            fontsize=12.0,
+            ha="center",
+            va="center",
+            bbox={
+                "boxstyle": "round,pad=0.38",
+                "fc": "white",
+                "ec": "#888888",
+                "alpha": 0.98,
+            },
+        )
+
+        pose_x0 = state.get("pose_x0")
+        pose_x1 = state.get("pose_x1")
+        expected = state.get("pose_x1_expected")
+
+        values_text = (
+            f"x0\n{self._formatear_pose_restriccion(pose_x0)}\n\n"
+            f"x1 actual\n{self._formatear_pose_restriccion(pose_x1)}\n\n"
+            f"x1 esperada\n{self._formatear_pose_restriccion(expected)}"
+        )
+
+        ax.text(
+            0.50,
+            0.610,
+            values_text,
+            fontsize=7.8,
+            ha="center",
+            va="center",
+            linespacing=1.35,
+            family="monospace",
+            bbox={
+                "boxstyle": "round,pad=0.45",
+                "fc": "#FAFAFA",
+                "ec": "#999999",
+                "alpha": 0.98,
+            },
+        )
+
+        focus = state.get("focus")
+        focus_texts = {
+            "connection": "La línea solo expresa conectividad.",
+            "measurement": "El sensor define cómo deberían relacionarse las poses.",
+            "x0": "x0 proporciona el sistema local de la medición.",
+            "x1": "x1 es una variable que puede modificarse.",
+            "prediction": "Las poses actuales generan una medición predicha.",
+            "translation_error": "La posición actual no coincide con la esperada.",
+            "angular_error": "La orientación también forma parte del residuo.",
+            "uncertainty": "La precisión determina cuánto pesa cada error.",
+            "cost": "El coste convierte el residuo en un escalar.",
+            "prior": "El prior elimina la libertad de desplazar todo el grafo.",
+            "correction": "Al mover x1 disminuyen el residuo y el coste.",
+            "comparison": "La medición y la predicción ya coinciden.",
+            "future_graph": "Graph SLAM combina muchas restricciones locales.",
+            "summary": "Cada arista aporta un término al coste global.",
+        }
+
+        ax.text(
+            0.50,
+            0.355,
+            focus_texts.get(focus, ""),
+            fontsize=8.0,
+            ha="center",
+            va="center",
+            wrap=True,
+            linespacing=1.35,
+            bbox={
+                "boxstyle": "round,pad=0.40",
+                "fc": "#FFF8E7",
+                "ec": "#C69C36",
+                "alpha": 0.98,
+            },
+        )
+
+        self._dibujar_leyenda_restriccion_pose(ax)
+
+    def _dibujar_geometria_restriccion_pose(self, ax, state):
+        """Dibuja las poses, las transformaciones y el residuo geométrico."""
+
+        ax.clear()
+        ax.set_xlim(0.30, 5.05)
+        ax.set_ylim(0.20, 3.00)
+        ax.set_aspect("equal", adjustable="box")
+        ax.set_xlabel("x [m]", fontsize=8)
+        ax.set_ylabel("y [m]", fontsize=8)
+        ax.grid(True, linewidth=0.55, alpha=0.28)
+        ax.tick_params(labelsize=7)
+        ax.set_title(
+            "Interpretación geométrica de la restricción",
+            fontsize=11.5,
+            fontweight="bold",
+            pad=10,
+        )
+
+        if not state.get("show_geometry", False):
+            ax.text(
+                0.50,
+                0.53,
+                "La misma arista se interpretará\ncomo una relación geométrica entre poses",
+                transform=ax.transAxes,
+                fontsize=12,
+                fontweight="bold",
+                ha="center",
+                va="center",
+                color="#555555",
+                bbox={
+                    "boxstyle": "round,pad=0.55",
+                    "fc": "white",
+                    "ec": "#999999",
+                    "alpha": 0.98,
+                },
+            )
+            ax.text(
+                0.50,
+                0.36,
+                "posición + orientación + sistema de referencia",
+                transform=ax.transAxes,
+                fontsize=8.6,
+                ha="center",
+                va="center",
+                color="#666666",
+            )
+            return
+
+        pose_x0 = state["pose_x0"]
+        pose_x1 = state["pose_x1"]
+        pose_initial = state["pose_x1_initial"]
+        expected = state["pose_x1_expected"]
+        sigmas = state["sigmas"]
+        alpha = state.get("correction_alpha", 0.0)
+
+        if state.get("show_uncertainty", False):
+            self._dibujar_elipse_incertidumbre_restriccion(
+                ax=ax,
+                expected_pose=expected,
+                sigmas=sigmas,
+            )
+
+        if state.get("show_measurement", False):
+            self._dibujar_flecha_transformacion_restriccion(
+                ax=ax,
+                start_pose=pose_x0,
+                end_pose=expected,
+                color="#2E8B57",
+                label=r"medición $z_{01}$",
+                curvature=0.08,
+                line_width=3.2,
+                label_offset=(0.0, 0.22),
+                zorder=15,
+            )
+
+        if state.get("show_prediction", False):
+            self._dibujar_flecha_transformacion_restriccion(
+                ax=ax,
+                start_pose=pose_x0,
+                end_pose=pose_x1,
+                color="#8E5EA2",
+                label=r"predicción $\hat z_{01}$",
+                curvature=-0.08,
+                line_width=3.0,
+                label_offset=(0.0, -0.20),
+                zorder=16,
+            )
+
+        if state.get("show_comparison", False) or (
+            state.get("phase") == "correction" and alpha > 0.02
+        ):
+            self._dibujar_pose_restriccion(
+                ax=ax,
+                pose=pose_initial,
+                label="x1 inicial",
+                face_color="#F7C6C7",
+                edge_color="#8B3A3A",
+                alpha=0.42,
+                zorder=21,
+                label_offset=(0.0, 0.33),
+                line_style="dashed",
+            )
+
+        if state.get("show_expected_pose", False):
+            self._dibujar_pose_restriccion(
+                ax=ax,
+                pose=expected,
+                label="x1* esperada",
+                face_color="white",
+                edge_color="#2E8B57",
+                alpha=0.95,
+                zorder=24,
+                label_offset=(-0.22, 0.38),
+                line_style="dashed",
+            )
+
+        if state.get("show_pose_x0", False):
+            self._dibujar_pose_restriccion(
+                ax=ax,
+                pose=pose_x0,
+                label="x0 fija",
+                face_color="#4C9ED9",
+                edge_color="#1F4F73",
+                zorder=31,
+            )
+
+        if state.get("show_pose_x1", False):
+            if state.get("phase") in {"comparison", "pose_graph_preview", "summary"}:
+                x1_face = "#B7E4C7"
+                x1_edge = "#2E8B57"
+            else:
+                x1_face = "#F28E2B"
+                x1_edge = "#8A4B08"
+
+            self._dibujar_pose_restriccion(
+                ax=ax,
+                pose=pose_x1,
+                label="x1 actual",
+                face_color=x1_face,
+                edge_color=x1_edge,
+                zorder=33,
+                label_offset=(0.18, -0.28),
+            )
+
+        if state.get("show_translation_error", False):
+            dx = pose_x1[0] - expected[0]
+            dy = pose_x1[1] - expected[1]
+            error_norm = (dx**2 + dy**2) ** 0.5
+
+            if error_norm > 1e-5:
+                self._dibujar_flecha_transformacion_restriccion(
+                    ax=ax,
+                    start_pose=expected,
+                    end_pose=pose_x1,
+                    color="#D62728",
+                    label=f"error {error_norm:.3f} m",
+                    curvature=0.0,
+                    line_width=3.5,
+                    label_offset=(0.24, 0.02),
+                    zorder=28,
+                )
+            else:
+                ax.text(
+                    expected[0] + 0.06,
+                    expected[1] - 0.48,
+                    "error de traslación ≈ 0",
+                    fontsize=7.4,
+                    fontweight="bold",
+                    color="#2E8B57",
+                    ha="center",
+                    va="top",
+                    zorder=40,
+                )
+
+        if state.get("show_angular_error", False):
+            expected_angle = degrees(expected[2])
+            current_angle = degrees(pose_x1[2])
+            angular_error = current_angle - expected_angle
+
+            if abs(angular_error) > 0.05:
+                theta1 = min(expected_angle, current_angle)
+                theta2 = max(expected_angle, current_angle)
+
+                arc = Arc(
+                    (pose_x1[0], pose_x1[1]),
+                    width=0.76,
+                    height=0.76,
+                    angle=0.0,
+                    theta1=theta1,
+                    theta2=theta2,
+                    linewidth=2.8,
+                    color="#D62728",
+                    zorder=36,
+                )
+                ax.add_patch(arc)
+
+                ax.text(
+                    pose_x1[0] + 0.46,
+                    pose_x1[1] + 0.26,
+                    f"eθ={angular_error:.2f}°",
+                    fontsize=7.4,
+                    fontweight="bold",
+                    color="#D62728",
+                    ha="left",
+                    va="center",
+                    zorder=40,
+                )
+
+        if state.get("show_prior", False):
+            self._dibujar_prior_restriccion(ax, pose_x0)
+
+        ax.text(
+            0.50,
+            0.015,
+            state.get("message", ""),
+            transform=ax.transAxes,
+            fontsize=8.8,
+            ha="center",
+            va="bottom",
+            bbox={
+                "boxstyle": "round,pad=0.38",
+                "fc": "white",
+                "ec": "#777777",
+                "alpha": 0.96,
+            },
+            zorder=60,
+        )
+
+    def _dibujar_grafo_restriccion_pose(self, ax, graph, state):
+        """Dibuja la arista como conexión, restricción o pose graph futuro."""
+
+        ax.clear()
+        ax.axis("off")
+        ax.set_xlim(-1.1, 5.15)
+        ax.set_ylim(-1.35, 1.75)
+
+        if state.get("show_future_graph", False):
+            ax.set_title(
+                "Vista previa: Pose Graph SLAM",
+                fontsize=10.4,
+                fontweight="bold",
+                pad=8,
+            )
+
+            positions = {
+                "x0": (0.0, 0.0),
+                "x1": (1.35, 0.0),
+                "x2": (2.70, 0.55),
+                "x3": (4.05, 0.05),
+                "prior": (-0.70, 1.00),
+            }
+
+            edges = [
+                ("x0", "x1", "z01"),
+                ("x1", "x2", "z12"),
+                ("x2", "x3", "z23"),
+            ]
+
+            for origin, destination, label in edges:
+                arrow = FancyArrowPatch(
+                    positions[origin],
+                    positions[destination],
+                    arrowstyle="-|>",
+                    mutation_scale=14,
+                    linewidth=2.4,
+                    color="#2E8B57",
+                    shrinkA=14,
+                    shrinkB=14,
+                    zorder=12,
+                )
+                ax.add_patch(arrow)
+
+                mx = (positions[origin][0] + positions[destination][0]) / 2
+                my = (positions[origin][1] + positions[destination][1]) / 2
+                ax.text(
+                    mx,
+                    my + 0.20,
+                    label,
+                    fontsize=7.0,
+                    fontweight="bold",
+                    ha="center",
+                    va="center",
+                    color="#2E8B57",
+                )
+
+            loop_arrow = FancyArrowPatch(
+                positions["x3"],
+                positions["x0"],
+                arrowstyle="-|>",
+                mutation_scale=14,
+                linewidth=2.6,
+                linestyle="dashed",
+                color="#8E5EA2",
+                shrinkA=14,
+                shrinkB=14,
+                connectionstyle="arc3,rad=-0.42",
+                zorder=13,
+            )
+            ax.add_patch(loop_arrow)
+            ax.text(
+                2.05,
+                -0.92,
+                "cierre de ciclo z30",
+                fontsize=7.2,
+                fontweight="bold",
+                color="#8E5EA2",
+                ha="center",
+                va="center",
+            )
+
+            prior_arrow = FancyArrowPatch(
+                positions["prior"],
+                positions["x0"],
+                arrowstyle="-|>",
+                mutation_scale=13,
+                linewidth=1.8,
+                color="#555555",
+                shrinkA=12,
+                shrinkB=14,
+            )
+            ax.add_patch(prior_arrow)
+
+            for node in ("x0", "x1", "x2", "x3"):
+                x, y = positions[node]
+                face_color = "#4C9ED9" if node == "x0" else "#F6C85F"
+                edge_color = "#1F4F73" if node == "x0" else "#8A6D1D"
+                circle = Ellipse(
+                    (x, y),
+                    width=0.48,
+                    height=0.48,
+                    facecolor=face_color,
+                    edgecolor=edge_color,
+                    linewidth=1.8,
+                    zorder=20,
+                )
+                ax.add_patch(circle)
+                ax.text(
+                    x,
+                    y,
+                    node,
+                    fontsize=8.5,
+                    fontweight="bold",
+                    ha="center",
+                    va="center",
+                    zorder=25,
+                )
+
+            prior_box = Rectangle(
+                (positions["prior"][0] - 0.33, positions["prior"][1] - 0.18),
+                0.66,
+                0.36,
+                facecolor="#E5E5E5",
+                edgecolor="#555555",
+                linewidth=1.5,
+                zorder=20,
+            )
+            ax.add_patch(prior_box)
+            ax.text(
+                *positions["prior"],
+                "prior",
+                fontsize=7.2,
+                fontweight="bold",
+                ha="center",
+                va="center",
+                zorder=25,
+            )
+
+            ax.text(
+                2.0,
+                1.42,
+                "Cada arista aporta un residuo al coste global",
+                fontsize=7.6,
+                ha="center",
+                va="center",
+                bbox={
+                    "boxstyle": "round,pad=0.30",
+                    "fc": "white",
+                    "ec": "#888888",
+                    "alpha": 0.98,
+                },
+            )
+            return
+
+        ax.set_title(
+            "Grafo de restricciones",
+            fontsize=10.6,
+            fontweight="bold",
+            pad=8,
+        )
+
+        positions = {
+            "prior": (-0.35, 0.95),
+            "x0": (0.60, 0.0),
+            "x1": (3.75, 0.0),
+        }
+
+        phase = state.get("phase", "")
+        is_normal = phase == "normal_graph"
+        cost = state.get("weighted_error", 0.0)
+
+        if is_normal:
+            edge_color = "#7F7F7F"
+            edge_width = 2.6
+            edge_label = "conexión"
+        elif cost < 1e-8:
+            edge_color = "#2E8B57"
+            edge_width = 3.5
+            edge_label = "z01, Ω01\nrestricción satisfecha"
+        elif phase == "correction":
+            edge_color = "#F28E2B"
+            edge_width = 3.5
+            edge_label = "z01, Ω01\nrestricción en corrección"
+        else:
+            edge_color = "#D62728"
+            edge_width = 3.5
+            edge_label = "z01, Ω01\nrestricción con error"
+
+        edge_arrow = FancyArrowPatch(
+            positions["x0"],
+            positions["x1"],
+            arrowstyle="-|>",
+            mutation_scale=16,
+            linewidth=edge_width,
+            color=edge_color,
+            shrinkA=24,
+            shrinkB=24,
+            zorder=12,
+        )
+        ax.add_patch(edge_arrow)
+
+        ax.text(
+            2.18,
+            0.31,
+            edge_label,
+            fontsize=7.6,
+            fontweight="bold",
+            ha="center",
+            va="center",
+            color=edge_color,
+            bbox={
+                "boxstyle": "round,pad=0.22",
+                "fc": "white",
+                "ec": edge_color,
+                "alpha": 0.96,
+            },
+        )
+
+        node_specs = {
+            "x0": ("#4C9ED9", "#1F4F73"),
+            "x1": (
+                ("#B7E4C7", "#2E8B57")
+                if cost < 1e-8
+                else ("#F28E2B", "#8A4B08")
+            ),
+        }
+
+        for node in ("x0", "x1"):
+            x, y = positions[node]
+            face, edge = node_specs[node]
+            circle = Ellipse(
+                (x, y),
+                width=0.72,
+                height=0.72,
+                facecolor=face,
+                edgecolor=edge,
+                linewidth=2.0,
+                zorder=20,
+            )
+            ax.add_patch(circle)
+            ax.text(
+                x,
+                y + 0.05,
+                node,
+                fontsize=10,
+                fontweight="bold",
+                ha="center",
+                va="center",
+                zorder=25,
+            )
+            ax.text(
+                x,
+                y - 0.20,
+                "fija" if node == "x0" else "variable",
+                fontsize=6.3,
+                ha="center",
+                va="center",
+                zorder=25,
+            )
+
+        if state.get("show_prior", False):
+            prior_box = Rectangle(
+                (positions["prior"][0] - 0.38, positions["prior"][1] - 0.20),
+                0.76,
+                0.40,
+                facecolor="#E5E5E5",
+                edgecolor="#555555",
+                linewidth=1.6,
+                zorder=20,
+            )
+            ax.add_patch(prior_box)
+            ax.text(
+                *positions["prior"],
+                "prior",
+                fontsize=7.4,
+                fontweight="bold",
+                ha="center",
+                va="center",
+                zorder=25,
+            )
+            prior_arrow = FancyArrowPatch(
+                positions["prior"],
+                positions["x0"],
+                arrowstyle="-|>",
+                mutation_scale=13,
+                linewidth=1.8,
+                color="#555555",
+                shrinkA=16,
+                shrinkB=24,
+                zorder=15,
+            )
+            ax.add_patch(prior_arrow)
+
+        if state.get("show_constraint_details", False):
+            measurement = state["measurement"]
+            residual = state["residual"]
+            details = (
+                "ARISTA x0 → x1\n"
+                f"sensor: {graph.edges['x0', 'x1'].get('sensor', '—')}\n"
+                f"z01: {self._formatear_pose_restriccion(measurement)}\n"
+                f"e01: {self._formatear_vector_restriccion(residual)}\n"
+                f"E01: {state.get('weighted_error', 0.0):.4f}"
+            )
+
+            ax.text(
+                2.18,
+                -0.88,
+                details,
+                fontsize=7.0,
+                family="monospace",
+                ha="center",
+                va="center",
+                linespacing=1.35,
+                bbox={
+                    "boxstyle": "round,pad=0.42",
+                    "fc": "#FAFAFA",
+                    "ec": "#888888",
+                    "alpha": 0.98,
+                },
+            )
+        else:
+            ax.text(
+                2.18,
+                -0.72,
+                "Una arista normal no permite\nevaluar coherencia geométrica",
+                fontsize=7.6,
+                ha="center",
+                va="center",
+                color="#555555",
+            )
+
+    def _dibujar_panel_calculos_restriccion(self, ax, state):
+        """Dibuja tarjetas de medición, predicción, residuo y coste."""
+
+        ax.clear()
+        ax.axis("off")
+        ax.set_xlim(0, 1)
+        ax.set_ylim(0, 1)
+
+        ax.text(
+            0.02,
+            0.93,
+            "Cálculo de la restricción",
+            fontsize=11.3,
+            fontweight="bold",
+            ha="left",
+            va="top",
+        )
+
+        if not state.get("show_constraint_details", False):
+            ax.text(
+                0.50,
+                0.47,
+                "La conexión todavía no contiene una medición, una incertidumbre ni una función de error.",
+                fontsize=10.0,
+                fontweight="bold",
+                ha="center",
+                va="center",
+                color="#555555",
+                bbox={
+                    "boxstyle": "round,pad=0.48",
+                    "fc": "white",
+                    "ec": "#999999",
+                    "alpha": 0.98,
+                },
+            )
+            return
+
+        measurement = state["measurement"]
+        prediction = state["prediction"]
+        residual = state["residual"]
+        visual_error = state["visual_error"]
+        cost = state.get("weighted_error", 0.0)
+        unweighted = state.get("unweighted_error", 0.0)
+
+        card_specs = [
+            (
+                "Medición z01",
+                self._formatear_pose_restriccion(measurement),
+                "#D5E8D4",
+                "#2E8B57",
+            ),
+            (
+                "Predicción z_hat01",
+                self._formatear_pose_restriccion(prediction),
+                "#E8D7F1",
+                "#8E5EA2",
+            ),
+            (
+                "Residuo SE(2)",
+                self._formatear_vector_restriccion(residual),
+                "#F7C6C7",
+                "#C62828",
+            ),
+            (
+                "Coste ponderado",
+                f"E01 = {cost:.6f}\n||e||² = {unweighted:.6f}",
+                "#FBE5A6",
+                "#8A6D1D",
+            ),
+        ]
+
+        card_width = 0.215
+        gap = 0.018
+        total_width = 4 * card_width + 3 * gap
+        start_x = 0.50 - total_width / 2
+
+        for index, (title, value, face, edge) in enumerate(card_specs):
+            x = start_x + index * (card_width + gap)
+
+            rectangle = Rectangle(
+                (x, 0.36),
+                card_width,
+                0.40,
+                facecolor=face,
+                edgecolor=edge,
+                linewidth=1.6,
+            )
+            ax.add_patch(rectangle)
+
+            ax.text(
+                x + card_width / 2,
+                0.675,
+                title,
+                fontsize=7.6,
+                fontweight="bold",
+                ha="center",
+                va="center",
+                color=edge,
+            )
+
+            ax.text(
+                x + card_width / 2,
+                0.515,
+                value,
+                fontsize=6.9,
+                family="monospace",
+                ha="center",
+                va="center",
+                linespacing=1.35,
+            )
+
+        if state.get("show_uncertainty", False):
+            sigmas = state["sigmas"]
+            information = state["information"]
+            uncertainty_text = (
+                f"σ = ({sigmas[0]:.2f} m, {sigmas[1]:.2f} m, "
+                f"{degrees(sigmas[2]):.2f}°)"
+                f"   ·   diag(Ω) = "
+                f"({information[0][0]:.2f}, "
+                f"{information[1][1]:.2f}, "
+                f"{information[2][2]:.2f})"
+            )
+            ax.text(
+                0.50,
+                0.270,
+                uncertainty_text,
+                fontsize=7.4,
+                ha="center",
+                va="center",
+                color="#444444",
+                bbox={
+                    "boxstyle": "round,pad=0.28",
+                    "fc": "white",
+                    "ec": "#777777",
+                    "alpha": 0.96,
+                },
+            )
+
+        visual_text = (
+            "Error visual global: "
+            f"Δx={visual_error[0]:.3f} m, "
+            f"Δy={visual_error[1]:.3f} m, "
+            f"Δθ={degrees(visual_error[2]):.3f}°"
+        )
+        ax.text(
+            0.02,
+            0.175,
+            visual_text,
+            fontsize=7.3,
+            ha="left",
+            va="center",
+            color="#444444",
+        )
+
+        if state.get("phase") == "correction":
+            alpha = state.get("correction_alpha", 0.0)
+            bar_x = 0.58
+            bar_y = 0.105
+            bar_width = 0.36
+            bar_height = 0.075
+
+            background = Rectangle(
+                (bar_x, bar_y),
+                bar_width,
+                bar_height,
+                facecolor="#E5E5E5",
+                edgecolor="#777777",
+                linewidth=1.2,
+            )
+            ax.add_patch(background)
+
+            progress = Rectangle(
+                (bar_x, bar_y),
+                bar_width * alpha,
+                bar_height,
+                facecolor="#B7E4C7",
+                edgecolor="#2E8B57",
+                linewidth=1.0,
+            )
+            ax.add_patch(progress)
+
+            ax.text(
+                bar_x + bar_width / 2,
+                bar_y + bar_height / 2,
+                f"corrección {100 * alpha:.0f}%",
+                fontsize=7.0,
+                fontweight="bold",
+                ha="center",
+                va="center",
+            )
+
+        if state.get("show_comparison", False):
+            initial_cost = state.get("initial_weighted_error", 0.0)
+            final_cost = state.get("final_weighted_error", 0.0)
+            ax.text(
+                0.98,
+                0.175,
+                (
+                    f"ANTES: E={initial_cost:.6f}   →   "
+                    f"DESPUÉS: E={final_cost:.6f}"
+                ),
+                fontsize=7.6,
+                fontweight="bold",
+                ha="right",
+                va="center",
+                color="#1F4F73",
+            )
+
+    def _dibujar_estado_restriccion_pose(
+        self,
+        geometry_ax,
+        graph_ax,
+        info_ax,
+        calculation_ax,
+        graph,
+        state,
+    ):
+        """Dibuja un estado completo de la transición a un factor de pose."""
+
+        self._dibujar_panel_informacion_restriccion(
+            ax=info_ax,
+            state=state,
+        )
+        self._dibujar_geometria_restriccion_pose(
+            ax=geometry_ax,
+            state=state,
+        )
+        self._dibujar_grafo_restriccion_pose(
+            ax=graph_ax,
+            graph=graph,
+            state=state,
+        )
+        self._dibujar_panel_calculos_restriccion(
+            ax=calculation_ax,
+            state=state,
+        )
+
+    def animate_basic_pose_constraint(
+        self,
+        graph,
+        states,
+        title="De una arista normal a una restricción entre poses",
+        final_image_path=None,
+        repeat=False,
+    ):
+        """
+        Anima la transición de una conexión a una restricción SE(2).
+
+        La secuencia muestra:
+        - dos vértices unidos por una arista normal;
+        - la medición, la covarianza y la información de la arista;
+        - las poses x0 y x1 en el plano;
+        - la pose esperada y la relación predicha;
+        - el residuo traslacional y angular;
+        - el coste eᵀΩe;
+        - el prior que fija x0;
+        - la corrección progresiva de x1;
+        - una vista previa de un pose graph con cierre de ciclo.
+        """
+
+        if not states:
+            raise ValueError(
+                "La lista de estados de la restricción no puede estar vacía."
+            )
+
+        if not graph.is_directed():
+            raise ValueError("El grafo de restricciones debe ser dirigido.")
+
+        if not graph.has_edge("x0", "x1"):
+            raise ValueError("Debe existir la restricción dirigida x0→x1.")
+
+        (
+            fig,
+            geometry_ax,
+            graph_ax,
+            info_ax,
+            calculation_ax,
+        ) = self._preparar_figura_restriccion_pose(title)
+
+        if final_image_path is not None:
+            self._dibujar_estado_restriccion_pose(
+                geometry_ax=geometry_ax,
+                graph_ax=graph_ax,
+                info_ax=info_ax,
+                calculation_ax=calculation_ax,
+                graph=graph,
+                state=states[-1],
+            )
+
+            final_image_path = Path(final_image_path)
+            final_image_path.parent.mkdir(
+                parents=True,
+                exist_ok=True,
+            )
+
+            fig.savefig(
+                final_image_path,
+                dpi=200,
+                bbox_inches="tight",
+            )
+
+            print(f"Imagen final guardada en: {final_image_path}")
+
+        def init():
+            self._dibujar_estado_restriccion_pose(
+                geometry_ax=geometry_ax,
+                graph_ax=graph_ax,
+                info_ax=info_ax,
+                calculation_ax=calculation_ax,
+                graph=graph,
+                state=states[0],
+            )
+            return []
+
+        def update(frame_index):
+            self._dibujar_estado_restriccion_pose(
+                geometry_ax=geometry_ax,
+                graph_ax=graph_ax,
+                info_ax=info_ax,
+                calculation_ax=calculation_ax,
+                graph=graph,
                 state=states[frame_index],
             )
             return []
