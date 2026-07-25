@@ -21,6 +21,7 @@ class GraphAnimator:
     - planificación y ejecución de tareas robóticas,
     - restricciones relativas entre poses y transición a Graph SLAM,
     - variables, mediciones, predicciones y errores en SE(2),
+    - funciones de coste y mínimos cuadrados,
     - caminos mínimos con Bellman-Ford,
     - caminos mínimos con Floyd-Warshall,
     - árboles de expansión mínima con Prim y Kruskal,
@@ -14002,6 +14003,1111 @@ class GraphAnimator:
                 flow_ax=flow_ax,
                 info_ax=info_ax,
                 calculation_ax=calculation_ax,
+                graph=graph,
+                state=states[frame_index],
+            )
+            return []
+
+        self.animation = FuncAnimation(
+            fig,
+            update,
+            frames=len(states),
+            init_func=init,
+            interval=self.interval,
+            repeat=repeat,
+            blit=False,
+        )
+
+        plt.show()
+        return self.animation
+    # ------------------------------------------------------------------
+    # Elementos específicos de funciones de coste y mínimos cuadrados
+    # ------------------------------------------------------------------
+
+    def _preparar_figura_funcion_coste(self, title):
+        """
+        Crea una figura comparable con los apartados 5.1 y 5.2.
+
+        Distribución:
+        - izquierda: mediciones, residuos y valores numéricos;
+        - centro superior: coste no ponderado;
+        - derecha superior: coste ponderado;
+        - extremo derecho: grafo de factores;
+        - zona inferior: evolución del coste y flujo conceptual.
+        """
+
+        fig = plt.figure(figsize=self.figsize)
+
+        grid = fig.add_gridspec(
+            2,
+            4,
+            width_ratios=[1.85, 3.05, 3.05, 2.10],
+            height_ratios=[4.65, 1.65],
+            wspace=0.12,
+            hspace=0.16,
+        )
+
+        info_ax = fig.add_subplot(grid[:, 0])
+        unweighted_ax = fig.add_subplot(grid[0, 1])
+        weighted_ax = fig.add_subplot(grid[0, 2])
+        graph_ax = fig.add_subplot(grid[0, 3])
+        history_ax = fig.add_subplot(grid[1, 1:])
+
+        fig.suptitle(
+            title,
+            fontsize=15,
+            fontweight="bold",
+        )
+
+        fig.subplots_adjust(
+            left=0.025,
+            right=0.985,
+            top=0.93,
+            bottom=0.045,
+        )
+
+        return (
+            fig,
+            info_ax,
+            unweighted_ax,
+            weighted_ax,
+            graph_ax,
+            history_ax,
+        )
+
+    def _dibujar_leyenda_funcion_coste(self, ax, weighted=False):
+        """Dibuja una leyenda compacta para las gráficas de coste."""
+
+        total_label = (
+            "Coste ponderado total"
+            if weighted
+            else "Coste total"
+        )
+
+        elements = [
+            Line2D(
+                [0],
+                [0],
+                color="#9A9A9A",
+                linewidth=1.4,
+                label="Costes individuales",
+            ),
+            Line2D(
+                [0],
+                [0],
+                color="#1F4F73" if not weighted else "#6A3D9A",
+                linewidth=3.0,
+                label=total_label,
+            ),
+            Line2D(
+                [0],
+                [0],
+                marker="o",
+                color="none",
+                markerfacecolor="#E45756",
+                markeredgecolor="#7A1D1D",
+                markersize=7,
+                label="Estimación actual",
+            ),
+            Line2D(
+                [0],
+                [0],
+                marker="*",
+                color="none",
+                markerfacecolor="#2E8B57",
+                markeredgecolor="#1D5A38",
+                markersize=10,
+                label="Mínimo",
+            ),
+        ]
+
+        ax.legend(
+            handles=elements,
+            loc="upper center",
+            fontsize=6.7,
+            framealpha=0.95,
+            ncol=2,
+            columnspacing=0.8,
+            handlelength=2.0,
+        )
+
+    def _dibujar_panel_datos_funcion_coste(self, ax, state):
+        """Muestra mediciones, pesos, residuos y resumen de la estimación."""
+
+        ax.clear()
+        ax.axis("off")
+        ax.set_xlim(0, 1)
+        ax.set_ylim(0, 1)
+
+        ax.text(
+            0.50,
+            0.985,
+            "Datos y evaluación",
+            fontsize=11.5,
+            fontweight="bold",
+            ha="center",
+            va="top",
+        )
+
+        mode = state.get("mode", "unweighted")
+        mode_text = (
+            "Mínimos cuadrados ponderados"
+            if mode == "weighted"
+            else "Mínimos cuadrados"
+        )
+
+        ax.text(
+            0.50,
+            0.947,
+            mode_text,
+            fontsize=8.2,
+            ha="center",
+            va="top",
+            color="#444444",
+        )
+
+        measurements = list(state.get("measurements", []))
+        weights = list(state.get("weights", []))
+        residuals = list(state.get("residuals", []))
+        individual_costs = list(state.get("individual_costs", []))
+        weighted_costs = list(
+            state.get("weighted_individual_costs", [])
+        )
+
+        show_weights = bool(state.get("show_weights", False))
+        show_residuals = bool(state.get("show_residuals", False))
+        show_individual_costs = bool(
+            state.get("show_individual_costs", False)
+        )
+
+        card_colors = ["#DCEAF5", "#FBE5A6", "#E8D7F1"]
+        top_y = 0.835
+        card_height = 0.120
+        vertical_gap = 0.018
+
+        for index, measurement in enumerate(measurements):
+            y = top_y - index * (card_height + vertical_gap)
+            rectangle = Rectangle(
+                (0.08, y),
+                0.84,
+                card_height,
+                facecolor=card_colors[index % len(card_colors)],
+                edgecolor="#666666",
+                linewidth=1.3,
+            )
+            ax.add_patch(rectangle)
+
+            ax.text(
+                0.13,
+                y + card_height * 0.70,
+                f"z{index + 1} = {measurement:.2f}",
+                fontsize=8.2,
+                fontweight="bold",
+                ha="left",
+                va="center",
+            )
+
+            if show_weights:
+                weight_text = f"w{index + 1} = {weights[index]:.2f}"
+            else:
+                weight_text = "peso = 1"
+
+            ax.text(
+                0.87,
+                y + card_height * 0.70,
+                weight_text,
+                fontsize=6.8,
+                ha="right",
+                va="center",
+            )
+
+            if show_residuals:
+                residual_text = f"e{index + 1} = {residuals[index]:+.3f}"
+            else:
+                residual_text = "e = x - z"
+
+            ax.text(
+                0.13,
+                y + card_height * 0.30,
+                residual_text,
+                fontsize=6.9,
+                ha="left",
+                va="center",
+            )
+
+            if show_individual_costs:
+                contribution = (
+                    weighted_costs[index]
+                    if show_weights
+                    else individual_costs[index]
+                )
+                cost_text = f"F{index + 1} = {contribution:.3f}"
+            else:
+                cost_text = "F = e²"
+
+            ax.text(
+                0.87,
+                y + card_height * 0.30,
+                cost_text,
+                fontsize=6.9,
+                ha="right",
+                va="center",
+            )
+
+        estimate = float(state.get("estimate", 0.0))
+        active_cost = float(state.get("active_cost", 0.0))
+        derivative = float(state.get("active_derivative", 0.0))
+        curvature = float(state.get("active_second_derivative", 0.0))
+        unweighted_minimum = float(state.get("unweighted_minimum", 0.0))
+        weighted_minimum = float(state.get("weighted_minimum", 0.0))
+
+        summary_y = 0.245
+        summary = Rectangle(
+            (0.08, summary_y),
+            0.84,
+            0.205,
+            facecolor="white",
+            edgecolor="#666666",
+            linewidth=1.4,
+        )
+        ax.add_patch(summary)
+
+        ax.text(
+            0.13,
+            summary_y + 0.165,
+            f"x actual = {estimate:.5f}",
+            fontsize=8.3,
+            fontweight="bold",
+            ha="left",
+            va="center",
+        )
+        ax.text(
+            0.13,
+            summary_y + 0.120,
+            f"F(x) = {active_cost:.5f}",
+            fontsize=7.5,
+            ha="left",
+            va="center",
+        )
+        ax.text(
+            0.13,
+            summary_y + 0.078,
+            f"F'(x) = {derivative:+.5f}",
+            fontsize=7.2,
+            ha="left",
+            va="center",
+        )
+        ax.text(
+            0.13,
+            summary_y + 0.037,
+            f"F''(x) = {curvature:.3f} > 0",
+            fontsize=7.0,
+            ha="left",
+            va="center",
+        )
+
+        minima_y = 0.105
+        ax.text(
+            0.50,
+            minima_y + 0.075,
+            f"media = {unweighted_minimum:.5f}",
+            fontsize=7.5,
+            ha="center",
+            va="center",
+            bbox={
+                "boxstyle": "round,pad=0.28",
+                "fc": "#DCEAF5",
+                "ec": "#1F4F73",
+                "alpha": 0.97,
+            },
+        )
+        ax.text(
+            0.50,
+            minima_y + 0.015,
+            f"media ponderada = {weighted_minimum:.5f}",
+            fontsize=7.2,
+            ha="center",
+            va="center",
+            bbox={
+                "boxstyle": "round,pad=0.28",
+                "fc": "#E8D7F1",
+                "ec": "#6A3D9A",
+                "alpha": 0.97,
+            },
+        )
+
+        ax.text(
+            0.50,
+            0.018,
+            f"Paso {state.get('step', 0)} de {state.get('total_steps', 0)}",
+            fontsize=6.8,
+            ha="center",
+            va="bottom",
+            color="#555555",
+        )
+
+    def _dibujar_curva_funcion_coste(
+        self,
+        ax,
+        state,
+        *,
+        weighted,
+    ):
+        """Dibuja la función no ponderada o la ponderada."""
+
+        ax.clear()
+        domain = list(state.get("domain", []))
+
+        if not domain:
+            ax.axis("off")
+            return
+
+        measurements = list(state.get("measurements", []))
+        estimate = float(state.get("estimate", 0.0))
+        show_measurements = bool(state.get("show_measurements", False))
+        show_individual = bool(state.get("show_individual_costs", False))
+        show_total = bool(state.get("show_total_cost", False))
+        show_estimate = bool(state.get("show_estimate", False))
+        show_gradient = bool(state.get("show_gradient", False))
+        show_weights = bool(state.get("show_weights", False))
+        show_weighted_curve = bool(state.get("show_weighted_curve", False))
+
+        if weighted:
+            ax.set_title(
+                "Coste ponderado",
+                fontsize=11,
+                fontweight="bold",
+            )
+
+            if not show_weights:
+                ax.set_xlim(min(domain), max(domain))
+                ax.set_ylim(0, 1)
+                ax.grid(alpha=0.18)
+                ax.text(
+                    0.50,
+                    0.52,
+                    "Los pesos se introducirán\ndespués del mínimo no ponderado",
+                    transform=ax.transAxes,
+                    fontsize=9,
+                    ha="center",
+                    va="center",
+                    bbox={
+                        "boxstyle": "round,pad=0.45",
+                        "fc": "white",
+                        "ec": "#999999",
+                        "alpha": 0.97,
+                    },
+                )
+                ax.set_xlabel("Variable x", fontsize=8)
+                ax.set_ylabel("Coste", fontsize=8)
+                return
+
+            individual_curves = list(
+                state.get("weighted_individual_curves", [])
+            )
+            total_curve = list(state.get("weighted_curve", []))
+            total_color = "#6A3D9A"
+            active_cost = float(state.get("weighted_cost", 0.0))
+            derivative = float(state.get("weighted_derivative", 0.0))
+            minimum = float(state.get("weighted_minimum", 0.0))
+            minimum_cost = float(state.get("weighted_minimum_cost", 0.0))
+            show_minimum = bool(state.get("show_weighted_minimum", False))
+        else:
+            ax.set_title(
+                "Coste no ponderado",
+                fontsize=11,
+                fontweight="bold",
+            )
+            individual_curves = list(state.get("individual_curves", []))
+            total_curve = list(state.get("unweighted_curve", []))
+            total_color = "#1F4F73"
+            active_cost = float(state.get("unweighted_cost", 0.0))
+            derivative = float(state.get("unweighted_derivative", 0.0))
+            minimum = float(state.get("unweighted_minimum", 0.0))
+            minimum_cost = float(state.get("unweighted_minimum_cost", 0.0))
+            show_minimum = bool(
+                state.get("show_unweighted_minimum", False)
+            )
+
+        curve_colors = ["#7FA6C2", "#D1A940", "#9B79B4"]
+
+        if show_individual:
+            for index, curve in enumerate(individual_curves):
+                ax.plot(
+                    domain,
+                    curve,
+                    color=curve_colors[index % len(curve_colors)],
+                    linewidth=1.25,
+                    alpha=0.78,
+                    label=f"F{index + 1}",
+                )
+
+        if show_total and (not weighted or show_weighted_curve):
+            ax.plot(
+                domain,
+                total_curve,
+                color=total_color,
+                linewidth=3.0,
+                zorder=12,
+            )
+
+        if show_measurements:
+            for index, measurement in enumerate(measurements):
+                ax.scatter(
+                    [measurement],
+                    [0.0],
+                    s=45,
+                    marker="v",
+                    color=curve_colors[index % len(curve_colors)],
+                    edgecolors="#444444",
+                    linewidths=0.7,
+                    zorder=20,
+                )
+                ax.text(
+                    measurement,
+                    0.0,
+                    f"  z{index + 1}",
+                    fontsize=6.8,
+                    ha="left",
+                    va="bottom",
+                )
+
+        if show_estimate and show_total and (not weighted or show_weighted_curve):
+            ax.scatter(
+                [estimate],
+                [active_cost],
+                s=78,
+                color="#E45756",
+                edgecolors="#7A1D1D",
+                linewidths=1.4,
+                zorder=25,
+            )
+            ax.plot(
+                [estimate, estimate],
+                [0.0, active_cost],
+                color="#E45756",
+                linewidth=1.2,
+                linestyle="dashed",
+                alpha=0.75,
+                zorder=14,
+            )
+            ax.text(
+                estimate,
+                active_cost,
+                f"  x={estimate:.3f}\n  F={active_cost:.3f}",
+                fontsize=6.7,
+                ha="left",
+                va="bottom",
+                bbox={
+                    "boxstyle": "round,pad=0.20",
+                    "fc": "white",
+                    "ec": "#C62828",
+                    "alpha": 0.94,
+                },
+                zorder=30,
+            )
+
+        if show_minimum and show_total and (not weighted or show_weighted_curve):
+            ax.scatter(
+                [minimum],
+                [minimum_cost],
+                s=135,
+                marker="*",
+                color="#2E8B57",
+                edgecolors="#1D5A38",
+                linewidths=1.2,
+                zorder=28,
+            )
+            ax.axvline(
+                minimum,
+                color="#2E8B57",
+                linewidth=1.4,
+                linestyle="dashed",
+                alpha=0.8,
+                zorder=13,
+            )
+            ax.text(
+                minimum,
+                minimum_cost,
+                f"mínimo\n{minimum:.3f}",
+                fontsize=6.8,
+                fontweight="bold",
+                ha="center",
+                va="bottom",
+                color="#1D5A38",
+            )
+
+        if weighted and state.get("show_unweighted_minimum", False):
+            unweighted_minimum = float(
+                state.get("unweighted_minimum", 0.0)
+            )
+            ax.axvline(
+                unweighted_minimum,
+                color="#1F4F73",
+                linewidth=1.2,
+                linestyle=":",
+                alpha=0.85,
+            )
+            ax.text(
+                unweighted_minimum,
+                0.96,
+                "media",
+                transform=ax.get_xaxis_transform(),
+                fontsize=6.3,
+                ha="center",
+                va="top",
+                color="#1F4F73",
+            )
+
+        if (
+            show_gradient
+            and show_estimate
+            and show_total
+            and (not weighted or show_weighted_curve)
+        ):
+            span = (max(domain) - min(domain)) * 0.14
+            tangent_x = [estimate - span, estimate + span]
+            tangent_y = [
+                active_cost + derivative * (value - estimate)
+                for value in tangent_x
+            ]
+            ax.plot(
+                tangent_x,
+                tangent_y,
+                color="#F28E2B",
+                linewidth=2.2,
+                linestyle="dashed",
+                zorder=19,
+            )
+
+            direction = -1.0 if derivative > 0.0 else 1.0
+            arrow_start = (estimate, active_cost)
+            arrow_end = (
+                estimate + direction * span * 0.75,
+                max(0.0, active_cost - abs(derivative) * span * 0.20),
+            )
+            arrow = FancyArrowPatch(
+                arrow_start,
+                arrow_end,
+                arrowstyle="-|>",
+                mutation_scale=14,
+                linewidth=2.0,
+                color="#F28E2B",
+                zorder=24,
+            )
+            ax.add_patch(arrow)
+
+        ax.set_xlim(min(domain), max(domain))
+
+        if total_curve:
+            curve_max = max(total_curve)
+            current_limit = max(active_cost, minimum_cost)
+            y_max = max(1.0, min(curve_max * 1.04, current_limit * 2.2 + 20.0))
+        else:
+            y_max = 1.0
+
+        if weighted:
+            y_max = max(y_max, float(state.get("weighted_minimum_cost", 0.0)) * 2.8)
+        else:
+            y_max = max(y_max, float(state.get("unweighted_minimum_cost", 0.0)) * 3.0)
+
+        ax.set_ylim(0.0, y_max)
+        ax.set_xlabel("Variable x", fontsize=8)
+        ax.set_ylabel("Coste", fontsize=8)
+        ax.tick_params(labelsize=7)
+        ax.grid(alpha=0.22)
+        self._dibujar_leyenda_funcion_coste(ax, weighted=weighted)
+
+    def _dibujar_grafo_factores_coste(self, ax, graph, state):
+        """Dibuja la variable, los factores y la suma de costes."""
+
+        ax.clear()
+        ax.axis("off")
+        ax.set_xlim(0, 1)
+        ax.set_ylim(0, 1)
+
+        ax.text(
+            0.50,
+            0.985,
+            "Grafo de factores",
+            fontsize=10.8,
+            fontweight="bold",
+            ha="center",
+            va="top",
+        )
+
+        if not state.get("show_factor_graph", False):
+            ax.text(
+                0.50,
+                0.52,
+                "Cada medición terminará\nsiendo un factor de coste",
+                fontsize=8.5,
+                ha="center",
+                va="center",
+                bbox={
+                    "boxstyle": "round,pad=0.45",
+                    "fc": "white",
+                    "ec": "#999999",
+                    "alpha": 0.97,
+                },
+            )
+            return
+
+        estimate = float(state.get("estimate", 0.0))
+        measurements = list(state.get("measurements", []))
+        weights = list(state.get("weights", []))
+        residuals = list(state.get("residuals", []))
+        show_weights = bool(state.get("show_weights", False))
+        contributions = (
+            list(state.get("weighted_individual_costs", []))
+            if show_weights
+            else list(state.get("individual_costs", []))
+        )
+
+        variable_position = (0.50, 0.79)
+        factor_positions = {
+            "f1": (0.18, 0.50),
+            "f2": (0.50, 0.50),
+            "f3": (0.82, 0.50),
+        }
+
+        for index, factor in enumerate(("f1", "f2", "f3")):
+            fx, fy = factor_positions[factor]
+            arrow = FancyArrowPatch(
+                variable_position,
+                (fx, fy + 0.055),
+                arrowstyle="-",
+                linewidth=1.8,
+                color="#777777",
+                shrinkA=19,
+                shrinkB=8,
+                zorder=10,
+            )
+            ax.add_patch(arrow)
+
+            middle_x = (variable_position[0] + fx) / 2
+            middle_y = (variable_position[1] + fy) / 2
+            ax.text(
+                middle_x,
+                middle_y,
+                f"e{index + 1}={residuals[index]:+.2f}",
+                fontsize=5.8,
+                ha="center",
+                va="center",
+                bbox={
+                    "boxstyle": "round,pad=0.12",
+                    "fc": "white",
+                    "ec": "none",
+                    "alpha": 0.92,
+                },
+            )
+
+        ax.scatter(
+            [variable_position[0]],
+            [variable_position[1]],
+            s=1150,
+            color="#E45756",
+            edgecolors="#7A1D1D",
+            linewidths=2.2,
+            zorder=20,
+        )
+        ax.text(
+            variable_position[0],
+            variable_position[1],
+            "x",
+            fontsize=12,
+            fontweight="bold",
+            ha="center",
+            va="center",
+            zorder=25,
+        )
+        ax.text(
+            variable_position[0],
+            variable_position[1] - 0.10,
+            f"{estimate:.3f}",
+            fontsize=7.0,
+            ha="center",
+            va="top",
+        )
+
+        factor_colors = ["#DCEAF5", "#FBE5A6", "#E8D7F1"]
+
+        for index, factor in enumerate(("f1", "f2", "f3")):
+            fx, fy = factor_positions[factor]
+            rectangle = Rectangle(
+                (fx - 0.105, fy - 0.055),
+                0.21,
+                0.11,
+                facecolor=factor_colors[index],
+                edgecolor="#555555",
+                linewidth=1.5,
+                zorder=18,
+            )
+            ax.add_patch(rectangle)
+            ax.text(
+                fx,
+                fy + 0.020,
+                factor,
+                fontsize=8.0,
+                fontweight="bold",
+                ha="center",
+                va="center",
+                zorder=22,
+            )
+
+            weight_text = (
+                f"w={weights[index]:.0f}"
+                if show_weights
+                else "w=1"
+            )
+            ax.text(
+                fx,
+                fy - 0.020,
+                f"z={measurements[index]:.1f} · {weight_text}",
+                fontsize=5.8,
+                ha="center",
+                va="center",
+                zorder=22,
+            )
+            ax.text(
+                fx,
+                fy - 0.085,
+                f"F{index + 1}={contributions[index]:.2f}",
+                fontsize=6.2,
+                ha="center",
+                va="top",
+            )
+
+        sum_rectangle = Rectangle(
+            (0.27, 0.235),
+            0.46,
+            0.105,
+            facecolor="#D5E8D4",
+            edgecolor="#2E8B57",
+            linewidth=1.8,
+        )
+        ax.add_patch(sum_rectangle)
+        ax.text(
+            0.50,
+            0.287,
+            "F(x) = F1 + F2 + F3",
+            fontsize=8.0,
+            fontweight="bold",
+            ha="center",
+            va="center",
+        )
+
+        for factor in ("f1", "f2", "f3"):
+            fx, fy = factor_positions[factor]
+            arrow = FancyArrowPatch(
+                (fx, fy - 0.065),
+                (0.50, 0.34),
+                arrowstyle="-|>",
+                mutation_scale=10,
+                linewidth=1.2,
+                color="#2E8B57",
+                shrinkA=4,
+                shrinkB=4,
+                zorder=12,
+            )
+            ax.add_patch(arrow)
+
+        active_cost = float(state.get("active_cost", 0.0))
+        ax.text(
+            0.50,
+            0.205,
+            f"coste actual = {active_cost:.4f}",
+            fontsize=7.3,
+            ha="center",
+            va="top",
+            color="#1D5A38",
+        )
+
+        if state.get("show_pose_graph_connection", False):
+            ax.text(
+                0.50,
+                0.115,
+                "Pose Graph SLAM",
+                fontsize=8.2,
+                fontweight="bold",
+                ha="center",
+                va="center",
+            )
+
+            pose_x = [0.18, 0.39, 0.61, 0.82]
+            pose_y = 0.055
+
+            for index, x_value in enumerate(pose_x):
+                ax.scatter(
+                    [x_value],
+                    [pose_y],
+                    s=150,
+                    color="#4C9ED9",
+                    edgecolors="#1F4F73",
+                    linewidths=1.0,
+                    zorder=20,
+                )
+                ax.text(
+                    x_value,
+                    pose_y,
+                    f"x{index}",
+                    fontsize=5.7,
+                    fontweight="bold",
+                    ha="center",
+                    va="center",
+                    zorder=22,
+                )
+
+            for x1, x2 in zip(pose_x[:-1], pose_x[1:]):
+                ax.plot(
+                    [x1, x2],
+                    [pose_y, pose_y],
+                    color="#777777",
+                    linewidth=1.2,
+                    zorder=10,
+                )
+
+            ax.plot(
+                [pose_x[0], pose_x[-1]],
+                [pose_y + 0.010, pose_y + 0.010],
+                color="#8E5EA2",
+                linewidth=1.3,
+                linestyle="dashed",
+                zorder=11,
+            )
+
+    def _dibujar_historial_coste(self, ax, state):
+        """Dibuja el historial del descenso o el flujo conceptual."""
+
+        ax.clear()
+        history_estimates = list(state.get("history_estimates", []))
+        history_costs = list(state.get("history_costs", []))
+
+        if history_costs:
+            iterations = list(range(1, len(history_costs) + 1))
+            ax.plot(
+                iterations,
+                history_costs,
+                marker="o",
+                linewidth=2.2,
+                markersize=4.8,
+                color=(
+                    "#6A3D9A"
+                    if state.get("mode") == "weighted"
+                    else "#1F4F73"
+                ),
+            )
+            ax.set_xlabel("Iteración", fontsize=8)
+            ax.set_ylabel("Coste", fontsize=8)
+            ax.tick_params(labelsize=7)
+            ax.grid(alpha=0.22)
+            ax.set_title(
+                "Evolución del coste durante el descenso",
+                fontsize=10.0,
+                fontweight="bold",
+                loc="left",
+            )
+
+            if history_estimates:
+                ax.text(
+                    0.99,
+                    0.92,
+                    (
+                        f"x: {history_estimates[0]:.4f}"
+                        f" → {history_estimates[-1]:.4f}\n"
+                        f"F: {history_costs[0]:.4f}"
+                        f" → {history_costs[-1]:.4f}"
+                    ),
+                    transform=ax.transAxes,
+                    fontsize=7.5,
+                    ha="right",
+                    va="top",
+                    bbox={
+                        "boxstyle": "round,pad=0.32",
+                        "fc": "white",
+                        "ec": "#777777",
+                        "alpha": 0.96,
+                    },
+                )
+        else:
+            ax.axis("off")
+            ax.set_xlim(0, 1)
+            ax.set_ylim(0, 1)
+
+            boxes = [
+                (0.03, "mediciones"),
+                (0.24, "residuos"),
+                (0.45, "cuadrados"),
+                (0.66, "suma"),
+                (0.84, "mínimo"),
+            ]
+
+            for x, label in boxes:
+                width = 0.13 if label != "mínimo" else 0.12
+                rectangle = Rectangle(
+                    (x, 0.34),
+                    width,
+                    0.30,
+                    facecolor="#F4F4F4",
+                    edgecolor="#666666",
+                    linewidth=1.4,
+                )
+                ax.add_patch(rectangle)
+                ax.text(
+                    x + width / 2,
+                    0.49,
+                    label,
+                    fontsize=8.3,
+                    fontweight="bold",
+                    ha="center",
+                    va="center",
+                )
+
+            arrow_pairs = [
+                (0.16, 0.24),
+                (0.37, 0.45),
+                (0.58, 0.66),
+                (0.79, 0.84),
+            ]
+
+            for start, end in arrow_pairs:
+                arrow = FancyArrowPatch(
+                    (start, 0.49),
+                    (end, 0.49),
+                    arrowstyle="-|>",
+                    mutation_scale=12,
+                    linewidth=1.5,
+                    color="#555555",
+                )
+                ax.add_patch(arrow)
+
+            ax.text(
+                0.50,
+                0.82,
+                "Construcción de la función objetivo",
+                fontsize=10.0,
+                fontweight="bold",
+                ha="center",
+                va="center",
+            )
+
+        ax.text(
+            0.50,
+            0.02,
+            state.get("message", ""),
+            transform=ax.transAxes,
+            fontsize=8.5,
+            ha="center",
+            va="bottom",
+            bbox={
+                "boxstyle": "round,pad=0.36",
+                "fc": "white",
+                "ec": "#777777",
+                "alpha": 0.96,
+            },
+            zorder=50,
+        )
+
+    def _dibujar_estado_funcion_coste(
+        self,
+        info_ax,
+        unweighted_ax,
+        weighted_ax,
+        graph_ax,
+        history_ax,
+        graph,
+        state,
+    ):
+        """Dibuja un fotograma completo del apartado 5.3."""
+
+        self._dibujar_panel_datos_funcion_coste(info_ax, state)
+        self._dibujar_curva_funcion_coste(
+            unweighted_ax,
+            state,
+            weighted=False,
+        )
+        self._dibujar_curva_funcion_coste(
+            weighted_ax,
+            state,
+            weighted=True,
+        )
+        self._dibujar_grafo_factores_coste(graph_ax, graph, state)
+        self._dibujar_historial_coste(history_ax, state)
+
+    def animate_cost_function_least_squares(
+        self,
+        graph,
+        states,
+        title="Funciones de coste y mínimos cuadrados",
+        final_image_path=None,
+        repeat=False,
+    ):
+        """
+        Anima la construcción y minimización de una función de coste.
+
+        La imagen final muestra:
+        - costes individuales y coste total;
+        - mínimo no ponderado y ponderado;
+        - mediciones, residuos, pesos y contribuciones;
+        - grafo de factores;
+        - conexión con la suma de costes de Pose Graph SLAM.
+        """
+
+        if not states:
+            raise ValueError(
+                "La lista de estados de la función de coste no puede estar vacía."
+            )
+
+        if graph.is_directed():
+            raise ValueError("El grafo de factores debe ser no dirigido.")
+
+        if "x" not in graph:
+            raise ValueError("El grafo debe contener la variable x.")
+
+        (
+            fig,
+            info_ax,
+            unweighted_ax,
+            weighted_ax,
+            graph_ax,
+            history_ax,
+        ) = self._preparar_figura_funcion_coste(title)
+
+        if final_image_path is not None:
+            self._dibujar_estado_funcion_coste(
+                info_ax=info_ax,
+                unweighted_ax=unweighted_ax,
+                weighted_ax=weighted_ax,
+                graph_ax=graph_ax,
+                history_ax=history_ax,
+                graph=graph,
+                state=states[-1],
+            )
+
+            final_image_path = Path(final_image_path)
+            final_image_path.parent.mkdir(parents=True, exist_ok=True)
+            fig.savefig(final_image_path, dpi=200, bbox_inches="tight")
+            print(f"Imagen final guardada en: {final_image_path}")
+
+        def init():
+            self._dibujar_estado_funcion_coste(
+                info_ax=info_ax,
+                unweighted_ax=unweighted_ax,
+                weighted_ax=weighted_ax,
+                graph_ax=graph_ax,
+                history_ax=history_ax,
+                graph=graph,
+                state=states[0],
+            )
+            return []
+
+        def update(frame_index):
+            self._dibujar_estado_funcion_coste(
+                info_ax=info_ax,
+                unweighted_ax=unweighted_ax,
+                weighted_ax=weighted_ax,
+                graph_ax=graph_ax,
+                history_ax=history_ax,
                 graph=graph,
                 state=states[frame_index],
             )
