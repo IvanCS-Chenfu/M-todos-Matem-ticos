@@ -27,6 +27,7 @@ class GraphAnimator:
     - priors, libertad de gauge y anclaje de pose graphs,
     - optimización no lineal iterativa con Gauss-Newton y Levenberg-Marquardt,
     - jacobianos, Hessianas y estructura dispersa en pose graphs,
+    - introducción a SLAM mediante trayectoria real y deriva de odometría,
     - caminos mínimos con Bellman-Ford,
     - caminos mínimos con Floyd-Warshall,
     - árboles de expansión mínima con Prim y Kruskal,
@@ -19192,6 +19193,888 @@ class GraphAnimator:
                 graph_ax=graph_ax,
                 jacobian_ax=jacobian_ax,
                 hessian_ax=hessian_ax,
+                state=states[frame_index],
+            )
+            return []
+
+        self.animation = FuncAnimation(
+            fig,
+            update,
+            frames=len(states),
+            init_func=init,
+            interval=self.interval,
+            repeat=repeat,
+            blit=False,
+        )
+
+        plt.show()
+        return self.animation
+    # ------------------------------------------------------------------
+    # Elementos específicos de introducción a SLAM y deriva de odometría
+    # ------------------------------------------------------------------
+
+    def _preparar_figura_deriva_odometria(self, title):
+        """Crea una figura comparable con los apartados de optimización."""
+
+        fig = plt.figure(figsize=self.figsize)
+
+        grid = fig.add_gridspec(
+            2,
+            3,
+            width_ratios=[1.55, 3.75, 2.40],
+            height_ratios=[3.45, 2.55],
+            wspace=0.10,
+            hspace=0.13,
+        )
+
+        info_ax = fig.add_subplot(grid[:, 0])
+        trajectory_ax = fig.add_subplot(grid[:, 1])
+        error_ax = fig.add_subplot(grid[0, 2])
+        diagnostic_ax = fig.add_subplot(grid[1, 2])
+
+        fig.suptitle(
+            title,
+            fontsize=15,
+            fontweight="bold",
+        )
+
+        fig.subplots_adjust(
+            left=0.025,
+            right=0.985,
+            top=0.925,
+            bottom=0.055,
+        )
+
+        return fig, info_ax, trajectory_ax, error_ax, diagnostic_ax
+
+    @staticmethod
+    def _dibujar_flecha_pose_deriva(
+        ax,
+        pose,
+        color,
+        length=0.30,
+        line_width=1.6,
+        alpha=1.0,
+        zorder=30,
+    ):
+        """Dibuja la orientación de una pose sin ocultar la trayectoria."""
+
+        x, y, theta = np.asarray(pose, dtype=float)
+        dx = length * np.cos(theta)
+        dy = length * np.sin(theta)
+
+        arrow = FancyArrowPatch(
+            (x, y),
+            (x + dx, y + dy),
+            arrowstyle="-|>",
+            mutation_scale=10,
+            linewidth=line_width,
+            color=color,
+            alpha=alpha,
+            zorder=zorder,
+        )
+        ax.add_patch(arrow)
+
+    def _dibujar_leyenda_deriva_odometria(self, ax):
+        """Dibuja la leyenda de las trayectorias y del error de cierre."""
+
+        elementos = [
+            Line2D(
+                [0],
+                [0],
+                color="#2E8B57",
+                linewidth=3.0,
+                label="Trayectoria real",
+            ),
+            Line2D(
+                [0],
+                [0],
+                color="#D62728",
+                linewidth=3.0,
+                linestyle="dashed",
+                label="Odometría integrada",
+            ),
+            Line2D(
+                [0],
+                [0],
+                color="#8E5EA2",
+                linewidth=2.2,
+                linestyle="dotted",
+                label="Error entre poses",
+            ),
+            Line2D(
+                [0],
+                [0],
+                marker="o",
+                color="none",
+                markerfacecolor="#F6C85F",
+                markeredgecolor="#8A6D1D",
+                markersize=8,
+                label="Inicio",
+            ),
+            Line2D(
+                [0],
+                [0],
+                marker="X",
+                color="none",
+                markerfacecolor="#D62728",
+                markeredgecolor="#7A1D1D",
+                markersize=8,
+                label="Final odométrico",
+            ),
+        ]
+
+        ax.legend(
+            handles=elementos,
+            loc="upper left",
+            fontsize=7.3,
+            framealpha=0.97,
+            ncol=2,
+            columnspacing=0.8,
+            handlelength=2.4,
+        )
+
+    @staticmethod
+    def _limites_trayectorias_deriva(true_trajectory, estimated_trajectory):
+        """Calcula límites comunes y estables para toda la animación."""
+
+        puntos = np.vstack(
+            (
+                np.asarray(true_trajectory, dtype=float)[:, :2],
+                np.asarray(estimated_trajectory, dtype=float)[:, :2],
+            )
+        )
+        min_x, min_y = np.min(puntos, axis=0)
+        max_x, max_y = np.max(puntos, axis=0)
+        span_x = max(max_x - min_x, 1.0)
+        span_y = max(max_y - min_y, 1.0)
+
+        return (
+            min_x - 0.12 * span_x - 0.35,
+            max_x + 0.12 * span_x + 0.35,
+            min_y - 0.12 * span_y - 0.35,
+            max_y + 0.12 * span_y + 0.35,
+        )
+
+    def _dibujar_panel_info_deriva(self, ax, simulation, state):
+        """Muestra conceptos, fase actual y métricas de la simulación."""
+
+        ax.clear()
+        ax.axis("off")
+        ax.set_xlim(0, 1)
+        ax.set_ylim(0, 1)
+
+        metrics = simulation["metrics"]
+        phase = state.get("phase", "introduction")
+        active_index = state.get("active_index")
+
+        ax.text(
+            0.50,
+            0.985,
+            "SLAM y deriva",
+            fontsize=12.2,
+            fontweight="bold",
+            ha="center",
+            va="top",
+        )
+
+        phase_labels = {
+            "introduction": "problema SLAM",
+            "ground_truth": "trayectoria real",
+            "odometry_model": "medición relativa",
+            "integration": "integración odométrica",
+            "drift": "deriva acumulada",
+            "loop_closure": "cierre de ciclo",
+            "summary": "necesidad de Graph SLAM",
+        }
+
+        ax.text(
+            0.50,
+            0.936,
+            phase_labels.get(phase, phase),
+            fontsize=8.2,
+            fontweight="bold",
+            ha="center",
+            va="top",
+            color="#7A1D1D",
+        )
+
+        cards = [
+            ("REAL", "movimiento físico", "#B7E4C7", "#2E8B57"),
+            ("ODOMETRÍA", "incrementos relativos", "#F7C6C7", "#7A1D1D"),
+            ("DERIVA", "error acumulado", "#D8C4E8", "#5A316B"),
+            ("SLAM", "restricciones globales", "#B7D7F0", "#1F4F73"),
+        ]
+
+        y_positions = [0.820, 0.710, 0.600, 0.490]
+
+        for (title, subtitle, face, edge), y in zip(cards, y_positions):
+            rectangle = Rectangle(
+                (0.10, y),
+                0.80,
+                0.085,
+                facecolor=face,
+                edgecolor=edge,
+                linewidth=1.4,
+            )
+            ax.add_patch(rectangle)
+            ax.text(
+                0.16,
+                y + 0.056,
+                title,
+                fontsize=7.9,
+                fontweight="bold",
+                ha="left",
+                va="center",
+            )
+            ax.text(
+                0.16,
+                y + 0.025,
+                subtitle,
+                fontsize=6.7,
+                ha="left",
+                va="center",
+                color="#333333",
+            )
+
+        if phase in {"integration", "drift", "loop_closure", "summary"}:
+            current_index = (
+                len(simulation["true_trajectory"]) - 1
+                if active_index is None
+                else max(0, min(int(active_index), len(simulation["true_trajectory"]) - 1))
+            )
+            position_error = simulation["position_errors"][current_index]
+            orientation_error = np.rad2deg(
+                simulation["orientation_errors"][current_index]
+            )
+            current_text = (
+                f"Pose actual: {current_index}\n"
+                f"error posición: {position_error:.3f} m\n"
+                f"error orientación: {orientation_error:.2f}°"
+            )
+        else:
+            current_text = (
+                "La estimación comienza\n"
+                "en la misma pose que\n"
+                "la trayectoria real."
+            )
+
+        ax.text(
+            0.50,
+            0.405,
+            current_text,
+            fontsize=7.6,
+            ha="center",
+            va="center",
+            linespacing=1.45,
+            bbox={
+                "boxstyle": "round,pad=0.42",
+                "fc": "white",
+                "ec": "#777777",
+                "alpha": 0.98,
+            },
+        )
+
+        if state.get("show_metrics"):
+            metric_text = (
+                f"poses: {metrics['pose_count']}\n"
+                f"recorrido: {metrics['real_length']:.2f} m\n"
+                f"error final: {metrics['position_final']:.3f} m\n"
+                f"giro final: {metrics['orientation_final_deg']:.2f}°\n"
+                f"RMSE: {metrics['position_rmse']:.3f} m\n"
+                f"deriva: {metrics['drift_percent']:.2f} %"
+            )
+        else:
+            metric_text = (
+                f"poses: {metrics['pose_count']}\n"
+                f"incrementos: {metrics['increment_count']}\n"
+                "sin referencias absolutas\n"
+                "ni cierres de ciclo"
+            )
+
+        ax.text(
+            0.50,
+            0.225,
+            metric_text,
+            fontsize=7.4,
+            ha="center",
+            va="center",
+            linespacing=1.38,
+            bbox={
+                "boxstyle": "round,pad=0.42",
+                "fc": "#F7F7F7",
+                "ec": "#888888",
+                "alpha": 0.98,
+            },
+        )
+
+        if state.get("show_connections"):
+            connection_text = (
+                "odometría\n"
+                "↓\n"
+                "cierre de ciclo\n"
+                "↓\n"
+                "Graph SLAM"
+            )
+            ax.text(
+                0.50,
+                0.070,
+                connection_text,
+                fontsize=7.1,
+                fontweight="bold",
+                ha="center",
+                va="center",
+                color="#1F4F73",
+            )
+        else:
+            ax.text(
+                0.50,
+                0.065,
+                "Los errores locales pequeños\nse componen durante todo el recorrido.",
+                fontsize=6.6,
+                ha="center",
+                va="center",
+                color="#444444",
+            )
+
+    def _dibujar_trayectorias_deriva(self, ax, simulation, state):
+        """Dibuja la trayectoria real, la odometría y el error actual."""
+
+        ax.clear()
+        ax.set_aspect("equal", adjustable="box")
+        ax.grid(True, alpha=0.22)
+        ax.set_xlabel("x [m]", fontsize=8)
+        ax.set_ylabel("y [m]", fontsize=8)
+        ax.tick_params(labelsize=7)
+
+        true_trajectory = np.asarray(
+            simulation["true_trajectory"],
+            dtype=float,
+        )
+        estimated_trajectory = np.asarray(
+            simulation["estimated_trajectory"],
+            dtype=float,
+        )
+
+        limits = self._limites_trayectorias_deriva(
+            true_trajectory,
+            estimated_trajectory,
+        )
+        ax.set_xlim(limits[0], limits[1])
+        ax.set_ylim(limits[2], limits[3])
+
+        true_count = min(
+            max(int(state.get("visible_true_count", 0)), 0),
+            len(true_trajectory),
+        )
+        estimated_count = min(
+            max(int(state.get("visible_estimated_count", 0)), 0),
+            len(estimated_trajectory),
+        )
+
+        if state.get("show_true") and true_count > 0:
+            true_visible = true_trajectory[:true_count]
+            ax.plot(
+                true_visible[:, 0],
+                true_visible[:, 1],
+                color="#2E8B57",
+                linewidth=2.8,
+                label="Trayectoria real",
+                zorder=15,
+            )
+
+        if state.get("show_estimated") and estimated_count > 0:
+            estimated_visible = estimated_trajectory[:estimated_count]
+            ax.plot(
+                estimated_visible[:, 0],
+                estimated_visible[:, 1],
+                color="#D62728",
+                linewidth=2.6,
+                linestyle="dashed",
+                label="Odometría integrada",
+                zorder=16,
+            )
+
+        # Poses de referencia repartidas a lo largo de la trayectoria.
+        stride = max(1, len(true_trajectory) // 12)
+        if state.get("show_true"):
+            for index in range(0, max(true_count, 1), stride):
+                if index < true_count:
+                    self._dibujar_flecha_pose_deriva(
+                        ax,
+                        true_trajectory[index],
+                        color="#2E8B57",
+                        length=0.24,
+                        line_width=1.2,
+                        alpha=0.75,
+                        zorder=28,
+                    )
+
+        if state.get("show_estimated"):
+            for index in range(0, max(estimated_count, 1), stride):
+                if index < estimated_count:
+                    self._dibujar_flecha_pose_deriva(
+                        ax,
+                        estimated_trajectory[index],
+                        color="#D62728",
+                        length=0.24,
+                        line_width=1.1,
+                        alpha=0.68,
+                        zorder=29,
+                    )
+
+        start = true_trajectory[0]
+        ax.scatter(
+            [start[0]],
+            [start[1]],
+            s=95,
+            marker="o",
+            facecolor="#F6C85F",
+            edgecolor="#8A6D1D",
+            linewidth=1.8,
+            zorder=40,
+        )
+        ax.text(
+            start[0] + 0.12,
+            start[1] - 0.18,
+            "inicio",
+            fontsize=7.5,
+            fontweight="bold",
+            color="#7A1D1D",
+            zorder=42,
+        )
+
+        active_index = state.get("active_index")
+        if active_index is not None:
+            active_index = max(
+                0,
+                min(int(active_index), len(true_trajectory) - 1),
+            )
+
+            if state.get("show_true") and active_index < true_count:
+                true_pose = true_trajectory[active_index]
+                ax.scatter(
+                    [true_pose[0]],
+                    [true_pose[1]],
+                    s=64,
+                    marker="o",
+                    facecolor="#2E8B57",
+                    edgecolor="#174F32",
+                    linewidth=1.4,
+                    zorder=43,
+                )
+
+            if state.get("show_estimated") and active_index < estimated_count:
+                estimated_pose = estimated_trajectory[active_index]
+                ax.scatter(
+                    [estimated_pose[0]],
+                    [estimated_pose[1]],
+                    s=74,
+                    marker="o",
+                    facecolor="#E45756",
+                    edgecolor="#7A1D1D",
+                    linewidth=1.6,
+                    zorder=44,
+                )
+
+            if (
+                state.get("show_error_vector")
+                and active_index < true_count
+                and active_index < estimated_count
+            ):
+                true_pose = true_trajectory[active_index]
+                estimated_pose = estimated_trajectory[active_index]
+                ax.plot(
+                    [true_pose[0], estimated_pose[0]],
+                    [true_pose[1], estimated_pose[1]],
+                    color="#8E5EA2",
+                    linewidth=2.0,
+                    linestyle="dotted",
+                    zorder=32,
+                )
+
+            if (
+                state.get("show_increment")
+                and active_index > 0
+                and active_index < estimated_count
+            ):
+                previous = estimated_trajectory[active_index - 1]
+                current = estimated_trajectory[active_index]
+                arrow = FancyArrowPatch(
+                    (previous[0], previous[1]),
+                    (current[0], current[1]),
+                    arrowstyle="-|>",
+                    mutation_scale=12,
+                    linewidth=2.0,
+                    color="#E45756",
+                    zorder=35,
+                )
+                ax.add_patch(arrow)
+
+        if state.get("show_loop_closure"):
+            final_estimated = estimated_trajectory[-1]
+            ax.scatter(
+                [final_estimated[0]],
+                [final_estimated[1]],
+                s=115,
+                marker="X",
+                facecolor="#D62728",
+                edgecolor="#7A1D1D",
+                linewidth=1.7,
+                zorder=48,
+            )
+            ax.plot(
+                [start[0], final_estimated[0]],
+                [start[1], final_estimated[1]],
+                color="#8E5EA2",
+                linewidth=2.4,
+                linestyle="dotted",
+                zorder=34,
+            )
+            midpoint = 0.5 * (start[:2] + final_estimated[:2])
+            ax.text(
+                midpoint[0],
+                midpoint[1] + 0.18,
+                (
+                    "error de cierre\n"
+                    f"{simulation['metrics']['estimated_closure_error']:.3f} m"
+                ),
+                fontsize=7.2,
+                fontweight="bold",
+                ha="center",
+                va="bottom",
+                color="#5A316B",
+                bbox={
+                    "boxstyle": "round,pad=0.22",
+                    "fc": "white",
+                    "ec": "#8E5EA2",
+                    "alpha": 0.95,
+                },
+                zorder=50,
+            )
+
+        ax.text(
+            0.50,
+            0.018,
+            state.get("message", ""),
+            transform=ax.transAxes,
+            fontsize=8.5,
+            ha="center",
+            va="bottom",
+            bbox={
+                "boxstyle": "round,pad=0.38",
+                "fc": "white",
+                "ec": "#777777",
+                "alpha": 0.96,
+            },
+            zorder=60,
+        )
+
+        ax.text(
+            0.99,
+            0.985,
+            (
+                f"Paso {state.get('step', 0)}/{state.get('total_steps', 0)}"
+            ),
+            transform=ax.transAxes,
+            fontsize=7.8,
+            ha="right",
+            va="top",
+            bbox={
+                "boxstyle": "round,pad=0.25",
+                "fc": "white",
+                "ec": "#999999",
+                "alpha": 0.95,
+            },
+            zorder=60,
+        )
+
+        self._dibujar_leyenda_deriva_odometria(ax)
+
+    def _dibujar_error_posicion_deriva(self, ax, simulation, state):
+        """Dibuja el error global de posición acumulado por la deriva."""
+
+        ax.clear()
+        ax.grid(True, alpha=0.24)
+        ax.set_title("Error global de posición", fontsize=10, fontweight="bold")
+        ax.set_xlabel("Índice de pose", fontsize=7.5)
+        ax.set_ylabel("Error [m]", fontsize=7.5)
+        ax.tick_params(labelsize=7)
+
+        errors = np.asarray(simulation["position_errors"], dtype=float)
+        active_index = state.get("active_index")
+
+        if active_index is None:
+            visible_count = 1
+        else:
+            visible_count = max(1, min(int(active_index) + 1, len(errors)))
+
+        if state.get("show_error_history"):
+            indices = np.arange(visible_count)
+            ax.plot(
+                indices,
+                errors[:visible_count],
+                color="#8E5EA2",
+                linewidth=2.3,
+                zorder=15,
+            )
+            ax.fill_between(
+                indices,
+                0.0,
+                errors[:visible_count],
+                color="#D8C4E8",
+                alpha=0.35,
+                zorder=10,
+            )
+            current_index = visible_count - 1
+            ax.scatter(
+                [current_index],
+                [errors[current_index]],
+                s=48,
+                facecolor="#E45756",
+                edgecolor="#7A1D1D",
+                linewidth=1.2,
+                zorder=20,
+            )
+
+        upper = max(0.25, 1.18 * float(np.max(errors)))
+        ax.set_xlim(0, len(errors) - 1)
+        ax.set_ylim(0, upper)
+
+        if state.get("show_metrics"):
+            ax.axhline(
+                simulation["metrics"]["position_rmse"],
+                color="#1F4F73",
+                linewidth=1.3,
+                linestyle="dashed",
+                label="RMSE",
+            )
+            ax.legend(loc="upper left", fontsize=6.7, framealpha=0.95)
+
+    def _dibujar_diagnostico_deriva(self, ax, simulation, state):
+        """Dibuja deriva angular y errores locales de la pose activa."""
+
+        ax.clear()
+        ax.grid(True, alpha=0.22)
+        ax.set_title(
+            "Deriva angular y error local",
+            fontsize=10,
+            fontweight="bold",
+        )
+        ax.set_xlabel("Índice de pose", fontsize=7.5)
+        ax.set_ylabel("Error angular [°]", fontsize=7.5)
+        ax.tick_params(labelsize=7)
+
+        orientation_errors = np.rad2deg(
+            np.asarray(simulation["orientation_errors"], dtype=float)
+        )
+        active_index = state.get("active_index")
+
+        if active_index is None:
+            visible_count = 1
+            active_index = 0
+        else:
+            active_index = max(
+                0,
+                min(int(active_index), len(orientation_errors) - 1),
+            )
+            visible_count = active_index + 1
+
+        if state.get("show_error_history"):
+            indices = np.arange(visible_count)
+            ax.plot(
+                indices,
+                orientation_errors[:visible_count],
+                color="#F28E2B",
+                linewidth=2.1,
+                zorder=15,
+            )
+            ax.scatter(
+                [active_index],
+                [orientation_errors[active_index]],
+                s=42,
+                facecolor="#E45756",
+                edgecolor="#7A1D1D",
+                linewidth=1.1,
+                zorder=20,
+            )
+
+        max_abs = max(1.0, float(np.max(np.abs(orientation_errors))))
+        ax.set_xlim(0, len(orientation_errors) - 1)
+        ax.set_ylim(-0.12 * max_abs, 1.18 * max_abs)
+        ax.axhline(0.0, color="#777777", linewidth=0.8)
+
+        if active_index > 0:
+            local_index = active_index - 1
+            local_translation = (
+                1000.0
+                * simulation["increment_translation_errors"][local_index]
+            )
+            local_orientation = np.rad2deg(
+                simulation["increment_orientation_errors"][local_index]
+            )
+            scale = simulation["scale_factors"][local_index]
+            diagnostic_text = (
+                f"incremento {local_index + 1}\n"
+                f"error local: {local_translation:.2f} mm\n"
+                f"error giro: {local_orientation:.3f}°\n"
+                f"escala: {scale:.5f}"
+            )
+        else:
+            diagnostic_text = (
+                "La pose inicial\n"
+                "no contiene deriva."
+            )
+
+        ax.text(
+            0.97,
+            0.06,
+            diagnostic_text,
+            transform=ax.transAxes,
+            fontsize=6.8,
+            ha="right",
+            va="bottom",
+            linespacing=1.32,
+            bbox={
+                "boxstyle": "round,pad=0.32",
+                "fc": "white",
+                "ec": "#888888",
+                "alpha": 0.96,
+            },
+            zorder=30,
+        )
+
+        if state.get("show_connections"):
+            ax.text(
+                0.03,
+                0.94,
+                "cierre de ciclo → optimización global",
+                transform=ax.transAxes,
+                fontsize=6.8,
+                fontweight="bold",
+                ha="left",
+                va="top",
+                color="#1F4F73",
+            )
+
+    def _dibujar_estado_deriva_odometria(
+        self,
+        info_ax,
+        trajectory_ax,
+        error_ax,
+        diagnostic_ax,
+        simulation,
+        state,
+    ):
+        """Dibuja un estado completo de la introducción a SLAM."""
+
+        self._dibujar_panel_info_deriva(
+            info_ax,
+            simulation,
+            state,
+        )
+        self._dibujar_trayectorias_deriva(
+            trajectory_ax,
+            simulation,
+            state,
+        )
+        self._dibujar_error_posicion_deriva(
+            error_ax,
+            simulation,
+            state,
+        )
+        self._dibujar_diagnostico_deriva(
+            diagnostic_ax,
+            simulation,
+            state,
+        )
+
+    def animate_slam_odometry_drift(
+        self,
+        simulation,
+        states,
+        title="Introducción a SLAM: deriva de odometría",
+        final_image_path=None,
+        repeat=False,
+    ):
+        """
+        Anima una trayectoria real y su estimación mediante odometría.
+
+        La imagen final muestra:
+        - trayectoria real cerrada;
+        - trayectoria odométrica con deriva;
+        - error de cierre;
+        - error de posición por pose;
+        - deriva angular;
+        - métricas que motivan cierres de ciclo y Graph SLAM.
+        """
+
+        if not states:
+            raise ValueError(
+                "La lista de estados de deriva de odometría no puede estar vacía."
+            )
+        if simulation is None:
+            raise ValueError("La simulación de SLAM no puede ser nula.")
+
+        required = {
+            "true_trajectory",
+            "estimated_trajectory",
+            "position_errors",
+            "orientation_errors",
+            "metrics",
+        }
+        missing = required.difference(simulation)
+        if missing:
+            raise ValueError(
+                "Faltan datos de la simulación: "
+                + ", ".join(sorted(missing))
+            )
+
+        (
+            fig,
+            info_ax,
+            trajectory_ax,
+            error_ax,
+            diagnostic_ax,
+        ) = self._preparar_figura_deriva_odometria(title)
+
+        if final_image_path is not None:
+            self._dibujar_estado_deriva_odometria(
+                info_ax=info_ax,
+                trajectory_ax=trajectory_ax,
+                error_ax=error_ax,
+                diagnostic_ax=diagnostic_ax,
+                simulation=simulation,
+                state=states[-1],
+            )
+
+            final_image_path = Path(final_image_path)
+            final_image_path.parent.mkdir(parents=True, exist_ok=True)
+            fig.savefig(
+                final_image_path,
+                dpi=200,
+                bbox_inches="tight",
+            )
+            print(f"Imagen final guardada en: {final_image_path}")
+
+        def init():
+            self._dibujar_estado_deriva_odometria(
+                info_ax=info_ax,
+                trajectory_ax=trajectory_ax,
+                error_ax=error_ax,
+                diagnostic_ax=diagnostic_ax,
+                simulation=simulation,
+                state=states[0],
+            )
+            return []
+
+        def update(frame_index):
+            self._dibujar_estado_deriva_odometria(
+                info_ax=info_ax,
+                trajectory_ax=trajectory_ax,
+                error_ax=error_ax,
+                diagnostic_ax=diagnostic_ax,
+                simulation=simulation,
                 state=states[frame_index],
             )
             return []
