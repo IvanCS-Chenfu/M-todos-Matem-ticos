@@ -32,6 +32,7 @@ class GraphAnimator:
     - loop closure con reconocimiento, verificación geométrica y robustez,
     - landmarks en SLAM con referencias conocidas y variables estimadas,
     - asociación de datos con gating, matching global y RANSAC,
+    - funciones robustas con comparación entre mínimos cuadrados e IRLS,
     - caminos mínimos con Bellman-Ford,
     - caminos mínimos con Floyd-Warshall,
     - árboles de expansión mínima con Prim y Kruskal,
@@ -25050,6 +25051,861 @@ class GraphAnimator:
                 matching_ax=matching_ax,
                 matrix_ax=matrix_ax,
                 verification_ax=verification_ax,
+                result=result,
+                state=states[frame_index],
+            )
+            return []
+
+        self.animation = FuncAnimation(
+            fig,
+            update,
+            frames=len(states),
+            init_func=init,
+            interval=self.interval,
+            repeat=repeat,
+            blit=False,
+        )
+        plt.show()
+        return self.animation
+
+    # ------------------------------------------------------------------
+    # Elementos específicos de funciones robustas
+    # ------------------------------------------------------------------
+
+    def _preparar_figura_funciones_robustas(self, title):
+        """Crea dos paneles de trayectoria y tres paneles de kernels."""
+
+        fig = plt.figure(figsize=self.figsize)
+        grid = fig.add_gridspec(
+            2,
+            7,
+            width_ratios=[1.72, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0],
+            height_ratios=[3.55, 2.05],
+            wspace=0.18,
+            hspace=0.23,
+        )
+
+        info_ax = fig.add_subplot(grid[:, 0])
+        quadratic_ax = fig.add_subplot(grid[0, 1:4])
+        robust_ax = fig.add_subplot(grid[0, 4:7])
+        loss_ax = fig.add_subplot(grid[1, 1:3])
+        influence_ax = fig.add_subplot(grid[1, 3:5])
+        weight_ax = fig.add_subplot(grid[1, 5:7])
+
+        fig.suptitle(title, fontsize=15, fontweight="bold")
+        fig.subplots_adjust(
+            left=0.025,
+            right=0.985,
+            top=0.925,
+            bottom=0.065,
+        )
+        return (
+            fig,
+            info_ax,
+            quadratic_ax,
+            robust_ax,
+            loss_ax,
+            influence_ax,
+            weight_ax,
+        )
+
+    @staticmethod
+    def _limites_funciones_robustas(result):
+        """Calcula límites comunes para comparar ambas trayectorias."""
+
+        colecciones = [
+            np.asarray(result["true_trajectory"], dtype=float),
+            np.asarray(result["initial_trajectory"], dtype=float),
+            np.asarray(result["quadratic_trajectory"], dtype=float),
+            np.asarray(result["robust_trajectory"], dtype=float),
+            np.asarray(result["clean_trajectory"], dtype=float),
+        ]
+        puntos = np.vstack([trayectoria[:, :2] for trayectoria in colecciones])
+        minimo = np.min(puntos, axis=0)
+        maximo = np.max(puntos, axis=0)
+        rango = np.maximum(maximo - minimo, 1.0)
+        margen = np.array([0.10 * rango[0] + 0.45, 0.12 * rango[1] + 0.45])
+        return (
+            float(minimo[0] - margen[0]),
+            float(maximo[0] + margen[0]),
+            float(minimo[1] - margen[1]),
+            float(maximo[1] + margen[1]),
+        )
+
+    @staticmethod
+    def _configurar_eje_funciones_robustas(ax, title, limits):
+        """Configura un panel de trayectoria con límites compartidos."""
+
+        ax.clear()
+        ax.set_title(title, fontsize=10.5, fontweight="bold")
+        ax.set_xlim(limits[0], limits[1])
+        ax.set_ylim(limits[2], limits[3])
+        ax.set_aspect("equal", adjustable="box")
+        ax.grid(True, alpha=0.20)
+        ax.set_xlabel("x [m]", fontsize=8)
+        ax.set_ylabel("y [m]", fontsize=8)
+        ax.tick_params(labelsize=7)
+
+    @staticmethod
+    def _dibujar_flechas_poses_funciones_robustas(
+        ax,
+        poses,
+        color,
+        alpha=0.85,
+        scale=0.38,
+        zorder=24,
+    ):
+        """Dibuja orientaciones de poses como flechas compactas."""
+
+        poses = np.asarray(poses, dtype=float)
+        if poses.size == 0:
+            return
+        indices = range(0, len(poses), max(1, len(poses) // 12))
+        for indice in indices:
+            x, y, theta = poses[indice]
+            ax.arrow(
+                x,
+                y,
+                scale * np.cos(theta),
+                scale * np.sin(theta),
+                width=0.018,
+                head_width=0.16,
+                head_length=0.18,
+                length_includes_head=True,
+                color=color,
+                alpha=alpha,
+                zorder=zorder,
+            )
+
+    def _dibujar_factores_funciones_robustas(
+        self,
+        ax,
+        result,
+        state,
+        poses,
+        method,
+    ):
+        """Dibuja odometría, cierre correcto, falso cierre y prior."""
+
+        poses = np.asarray(poses, dtype=float)
+        visible_poses = int(state.get("visible_pose_count", len(poses)))
+        visible_poses = max(0, min(visible_poses, len(poses)))
+        visible_odometry = int(
+            state.get("visible_odometry_count", max(visible_poses - 1, 0))
+        )
+        visible_odometry = max(0, min(visible_odometry, len(poses) - 1))
+
+        for indice in range(visible_odometry):
+            p1 = poses[indice, :2]
+            p2 = poses[indice + 1, :2]
+            ax.plot(
+                [p1[0], p2[0]],
+                [p1[1], p2[1]],
+                color="#8E8E8E",
+                linewidth=1.25,
+                alpha=0.66,
+                zorder=8,
+            )
+
+        if state.get("show_prior", False) and visible_poses > 0:
+            p0 = poses[0, :2]
+            ax.scatter(
+                [p0[0]],
+                [p0[1]],
+                marker="s",
+                s=95,
+                facecolor="#8E5EA2",
+                edgecolor="#5A316B",
+                linewidth=1.4,
+                zorder=31,
+            )
+            ax.text(
+                p0[0],
+                p0[1] - 0.42,
+                "prior x0",
+                fontsize=6.5,
+                fontweight="bold",
+                ha="center",
+                va="top",
+                color="#5A316B",
+                zorder=35,
+            )
+
+        if state.get("show_correct_loop", False):
+            origen = len(poses) - 1
+            destino = 0
+            p1 = poses[origen, :2]
+            p2 = poses[destino, :2]
+            ax.plot(
+                [p1[0], p2[0]],
+                [p1[1], p2[1]],
+                color="#2E8B57",
+                linewidth=3.1,
+                alpha=0.90,
+                zorder=16,
+            )
+            medio = 0.5 * (p1 + p2)
+            ax.text(
+                medio[0],
+                medio[1] + 0.26,
+                "cierre correcto",
+                fontsize=6.2,
+                fontweight="bold",
+                ha="center",
+                color="#1E6B42",
+                bbox={
+                    "boxstyle": "round,pad=0.18",
+                    "fc": "white",
+                    "ec": "#2E8B57",
+                    "alpha": 0.92,
+                },
+                zorder=36,
+            )
+
+        if state.get("show_false_loop", False):
+            origen = int(result["parameters"]["false_origin"])
+            destino = int(result["parameters"]["false_target"])
+            p1 = poses[origen, :2]
+            p2 = poses[destino, :2]
+            weight = state.get("false_weight")
+            if weight is None:
+                weight = 1.0
+            weight = float(np.clip(weight, 0.0, 1.0))
+
+            if method == "huber":
+                line_width = 1.3 + 4.0 * weight
+                alpha = 0.20 + 0.80 * max(weight, 0.035)
+                line_style = "dashed"
+            else:
+                line_width = 4.2
+                alpha = 0.94
+                line_style = "solid"
+
+            ax.plot(
+                [p1[0], p2[0]],
+                [p1[1], p2[1]],
+                color="#C62828",
+                linewidth=line_width,
+                linestyle=line_style,
+                alpha=alpha,
+                zorder=18,
+            )
+            ax.scatter(
+                [p1[0], p2[0]],
+                [p1[1], p2[1]],
+                s=82,
+                facecolor="#F6B4B4",
+                edgecolor="#8B0000",
+                linewidth=1.4,
+                zorder=32,
+            )
+            medio = 0.5 * (p1 + p2)
+            etiqueta = "factor falso"
+            if method == "huber":
+                etiqueta += f" · w={weight:.4f}"
+            else:
+                etiqueta += " · w=1"
+            ax.text(
+                medio[0],
+                medio[1] - 0.22,
+                etiqueta,
+                fontsize=6.2,
+                fontweight="bold",
+                ha="center",
+                va="top",
+                color="#8B0000",
+                bbox={
+                    "boxstyle": "round,pad=0.18",
+                    "fc": "white",
+                    "ec": "#C62828",
+                    "alpha": 0.93,
+                },
+                zorder=37,
+            )
+
+    def _dibujar_panel_trayectoria_funciones_robustas(
+        self,
+        ax,
+        result,
+        state,
+        method,
+        limits,
+    ):
+        """Dibuja el panel cuadrático o el panel robusto."""
+
+        if method == "quadratic":
+            titulo = "Sin función robusta · mínimos cuadrados"
+            color = "#C62828"
+            poses = state.get("quadratic_poses")
+            if poses is None:
+                poses = result["initial_trajectory"]
+            show_solution = state.get("show_quadratic", False)
+        else:
+            titulo = "Con función robusta · Huber + IRLS"
+            color = "#2E8B57"
+            poses = state.get("robust_poses")
+            if poses is None:
+                poses = result["initial_trajectory"]
+            show_solution = state.get("show_robust", False)
+
+        poses = np.asarray(poses, dtype=float)
+        self._configurar_eje_funciones_robustas(ax, titulo, limits)
+
+        true = np.asarray(result["true_trajectory"], dtype=float)
+        initial = np.asarray(result["initial_trajectory"], dtype=float)
+        visible = int(state.get("visible_pose_count", len(true)))
+        visible = max(0, min(visible, len(true)))
+
+        if state.get("show_true", False) and visible > 0:
+            ax.plot(
+                true[:visible, 0],
+                true[:visible, 1],
+                color="#222222",
+                linewidth=2.0,
+                linestyle="dashed",
+                alpha=0.78,
+                label="trayectoria real",
+                zorder=6,
+            )
+
+        if state.get("show_initial", False) and visible > 0:
+            ax.plot(
+                initial[:visible, 0],
+                initial[:visible, 1],
+                color="#777777",
+                linewidth=1.8,
+                linestyle="dotted",
+                alpha=0.88,
+                label="estimación inicial",
+                zorder=7,
+            )
+
+        if state.get("show_clean", False):
+            clean = np.asarray(result["clean_trajectory"], dtype=float)
+            ax.plot(
+                clean[:, 0],
+                clean[:, 1],
+                color="#4C9ED9",
+                linewidth=1.7,
+                linestyle="dashdot",
+                alpha=0.82,
+                label="referencia sin outlier",
+                zorder=9,
+            )
+
+        if visible > 0:
+            current = poses[:visible]
+            self._dibujar_factores_funciones_robustas(
+                ax=ax,
+                result=result,
+                state=state,
+                poses=poses,
+                method=method,
+            )
+            ax.plot(
+                current[:, 0],
+                current[:, 1],
+                color=color if show_solution else "#8E8E8E",
+                linewidth=2.8 if show_solution else 1.55,
+                alpha=0.96,
+                label=(
+                    "solución cuadrática"
+                    if method == "quadratic" and show_solution
+                    else "solución robusta"
+                    if method == "huber" and show_solution
+                    else "estado actual"
+                ),
+                zorder=21,
+            )
+            ax.scatter(
+                current[:, 0],
+                current[:, 1],
+                s=28,
+                facecolor=color if show_solution else "#D9D9D9",
+                edgecolor="#7A1D1D" if method == "quadratic" else "#1E6B42",
+                linewidth=0.8,
+                zorder=27,
+            )
+            self._dibujar_flechas_poses_funciones_robustas(
+                ax,
+                current,
+                color=color if show_solution else "#666666",
+                alpha=0.82,
+            )
+            for indice, (x, y, _) in enumerate(current):
+                ax.text(
+                    x,
+                    y + 0.25,
+                    f"x{indice}",
+                    fontsize=5.4,
+                    ha="center",
+                    va="bottom",
+                    color="#333333",
+                    zorder=34,
+                )
+
+        handles, labels = ax.get_legend_handles_labels()
+        if handles:
+            ax.legend(
+                handles,
+                labels,
+                loc="upper right",
+                fontsize=6.5,
+                framealpha=0.94,
+            )
+
+    @staticmethod
+    def _nombres_colores_kernels():
+        """Devuelve nombres y colores estables para las curvas."""
+
+        return {
+            "least_squares": ("Cuadrático", "#C62828"),
+            "huber": ("Huber", "#2E8B57"),
+            "cauchy": ("Cauchy", "#4C9ED9"),
+            "tukey": ("Tukey", "#8E5EA2"),
+            "geman_mcclure": ("Geman-McClure", "#F28E2B"),
+        }
+
+    def _dibujar_curva_kernel_funciones_robustas(
+        self,
+        ax,
+        result,
+        state,
+        quantity,
+        title,
+        ylabel,
+    ):
+        """Dibuja pérdida, influencia o peso de todos los kernels."""
+
+        ax.clear()
+        ax.set_title(title, fontsize=9.2, fontweight="bold")
+        ax.set_xlabel("residuo normalizado r", fontsize=7.5)
+        ax.set_ylabel(ylabel, fontsize=7.5)
+        ax.grid(True, alpha=0.22)
+        ax.tick_params(labelsize=6.6)
+
+        if not state.get("show_curves", False):
+            ax.text(
+                0.50,
+                0.50,
+                "Las curvas aparecerán al introducir los kernels",
+                transform=ax.transAxes,
+                fontsize=8,
+                ha="center",
+                va="center",
+                color="#666666",
+            )
+            return
+
+        datos = result["kernel_curves"]
+        r = np.asarray(datos["r"], dtype=float)
+        nombres = self._nombres_colores_kernels()
+
+        for key, values in datos["curves"].items():
+            label, color = nombres[key]
+            ax.plot(
+                r,
+                np.asarray(values[quantity], dtype=float),
+                color=color,
+                linewidth=2.2 if key in {"least_squares", "huber"} else 1.55,
+                alpha=0.95,
+                label=label,
+            )
+
+        ax.axvline(
+            float(datos["delta_huber"]),
+            color="#555555",
+            linewidth=1.0,
+            linestyle="dashed",
+            alpha=0.75,
+        )
+        ax.text(
+            float(datos["delta_huber"]),
+            0.98,
+            " δ",
+            transform=ax.get_xaxis_transform(),
+            fontsize=7,
+            va="top",
+            ha="left",
+            color="#444444",
+        )
+
+        marker = state.get("curve_marker")
+        if marker is None and state.get("false_mahalanobis") is not None:
+            marker = float(state["false_mahalanobis"])
+        if marker is not None:
+            marker = float(marker)
+            marker_visible = min(max(marker, r[0]), r[-1])
+            ax.axvline(
+                marker_visible,
+                color="#8B0000",
+                linewidth=1.4,
+                linestyle=":" if marker <= r[-1] else "dashed",
+                alpha=0.88,
+            )
+            if marker > r[-1]:
+                ax.text(
+                    0.98,
+                    0.86,
+                    f"outlier r≈{marker:.1f}\nfuera de escala",
+                    transform=ax.transAxes,
+                    fontsize=6.2,
+                    fontweight="bold",
+                    color="#8B0000",
+                    ha="right",
+                    va="top",
+                    bbox={
+                        "boxstyle": "round,pad=0.20",
+                        "fc": "white",
+                        "ec": "#C62828",
+                        "alpha": 0.92,
+                    },
+                )
+
+        if quantity == "weight":
+            ax.set_ylim(-0.03, 1.06)
+        else:
+            valores = [
+                np.asarray(v[quantity], dtype=float)
+                for v in datos["curves"].values()
+            ]
+            maximo = max(float(np.max(v)) for v in valores)
+            ax.set_ylim(-0.02 * maximo, 1.06 * maximo)
+
+        ax.legend(
+            loc="upper left" if quantity != "loss" else "upper right",
+            fontsize=5.7,
+            framealpha=0.92,
+            ncol=1,
+        )
+
+    def _dibujar_info_funciones_robustas(self, ax, result, state):
+        """Dibuja fórmulas, métricas y el estado de la comparación."""
+
+        ax.clear()
+        ax.axis("off")
+        ax.set_xlim(0, 1)
+        ax.set_ylim(0, 1)
+
+        ax.text(
+            0.50,
+            0.985,
+            "Funciones robustas",
+            fontsize=12.5,
+            fontweight="bold",
+            ha="center",
+            va="top",
+        )
+        ax.text(
+            0.50,
+            0.948,
+            "Mínimos cuadrados frente a Huber",
+            fontsize=8.2,
+            ha="center",
+            va="top",
+            color="#444444",
+        )
+
+        formula = (
+            "Cuadrático:\n"
+            "ρ(r) = ½ r²     w = 1\n\n"
+            "Huber:\n"
+            "ρ(r) = ½ r²               r ≤ δ\n"
+            "ρ(r) = δ(r - ½δ)     r > δ\n"
+            "w(r) = min(1, δ/r)"
+        )
+        ax.text(
+            0.06,
+            0.885,
+            formula,
+            fontsize=7.5,
+            ha="left",
+            va="top",
+            linespacing=1.38,
+            bbox={
+                "boxstyle": "round,pad=0.38",
+                "fc": "white",
+                "ec": "#777777",
+                "alpha": 0.97,
+            },
+        )
+
+        step = state.get("step", 0)
+        total = state.get("total_steps", 0)
+        phase = str(state.get("phase", ""))
+        ax.text(
+            0.06,
+            0.695,
+            f"Paso {step}/{total}\nFase: {phase}",
+            fontsize=7.2,
+            fontweight="bold",
+            ha="left",
+            va="top",
+            color="#333333",
+        )
+
+        message = str(state.get("message", ""))
+        palabras = message.split()
+        lineas = []
+        linea = ""
+        for palabra in palabras:
+            candidata = (linea + " " + palabra).strip()
+            if len(candidata) > 34 and linea:
+                lineas.append(linea)
+                linea = palabra
+            else:
+                linea = candidata
+        if linea:
+            lineas.append(linea)
+        ax.text(
+            0.06,
+            0.625,
+            "\n".join(lineas),
+            fontsize=7.4,
+            ha="left",
+            va="top",
+            linespacing=1.35,
+            bbox={
+                "boxstyle": "round,pad=0.35",
+                "fc": "#F7F7F7",
+                "ec": "#AAAAAA",
+                "alpha": 0.97,
+            },
+        )
+
+        metrics_text = [
+            f"poses: {len(result['true_trajectory'])}",
+            f"factores: {1 + len(result['graph'].graph['factor_order'])}",
+            f"δ Huber: {result['parameters']['delta_huber']:.2f}",
+        ]
+        if state.get("iteration") is not None:
+            metrics_text.append(f"iteración: {state['iteration']}")
+        if state.get("cost") is not None:
+            metrics_text.append(f"coste: {float(state['cost']):.5g}")
+        if state.get("rmse") is not None:
+            metrics_text.append(f"RMSE pos.: {float(state['rmse']):.4f} m")
+        if state.get("angle_rmse_deg") is not None:
+            metrics_text.append(
+                f"RMSE ang.: {float(state['angle_rmse_deg']):.3f}°"
+            )
+        if state.get("false_mahalanobis") is not None:
+            metrics_text.append(
+                f"r falso: {float(state['false_mahalanobis']):.2f}"
+            )
+        if state.get("false_weight") is not None:
+            metrics_text.append(f"w falso: {float(state['false_weight']):.5f}")
+        if state.get("correct_weight") is not None:
+            metrics_text.append(
+                f"w cierre correcto: {float(state['correct_weight']):.4f}"
+            )
+        if state.get("step_norm") is not None:
+            metrics_text.append(f"||ΔY||: {float(state['step_norm']):.3g}")
+        if state.get("damping") is not None:
+            metrics_text.append(f"λ: {float(state['damping']):.3g}")
+
+        ax.text(
+            0.06,
+            0.450,
+            "\n".join(metrics_text),
+            fontsize=7.2,
+            ha="left",
+            va="top",
+            linespacing=1.32,
+            bbox={
+                "boxstyle": "round,pad=0.34",
+                "fc": "white",
+                "ec": "#999999",
+                "alpha": 0.97,
+            },
+        )
+
+        if state.get("show_summary", False):
+            initial = result["initial_metrics"]["position_rmse"]
+            clean = result["clean_metrics"]["position_rmse"]
+            quadratic = result["quadratic_metrics"]["position_rmse"]
+            robust = result["robust_metrics"]["position_rmse"]
+            ax.text(
+                0.06,
+                0.235,
+                (
+                    "RMSE de posición\n"
+                    f"inicial:       {initial:.4f} m\n"
+                    f"sin outlier:   {clean:.4f} m\n"
+                    f"cuadrático:    {quadratic:.4f} m\n"
+                    f"Huber:         {robust:.4f} m\n\n"
+                    "Peso final del falso factor\n"
+                    f"w = {result['false_factor']['final_robust']['weight']:.6f}"
+                ),
+                fontsize=7.15,
+                fontweight="bold",
+                ha="left",
+                va="top",
+                linespacing=1.35,
+                bbox={
+                    "boxstyle": "round,pad=0.38",
+                    "fc": "#EDF7EF",
+                    "ec": "#2E8B57",
+                    "alpha": 0.98,
+                },
+            )
+
+        ax.text(
+            0.50,
+            0.022,
+            "Robustez limita el daño; no corrige una asociación falsa.",
+            fontsize=6.7,
+            fontweight="bold",
+            ha="center",
+            va="bottom",
+            color="#7A1D1D",
+        )
+
+    def _dibujar_estado_funciones_robustas(
+        self,
+        info_ax,
+        quadratic_ax,
+        robust_ax,
+        loss_ax,
+        influence_ax,
+        weight_ax,
+        result,
+        state,
+    ):
+        """Dibuja un estado completo del apartado de funciones robustas."""
+
+        limits = self._limites_funciones_robustas(result)
+        self._dibujar_info_funciones_robustas(info_ax, result, state)
+        self._dibujar_panel_trayectoria_funciones_robustas(
+            quadratic_ax,
+            result,
+            state,
+            method="quadratic",
+            limits=limits,
+        )
+        self._dibujar_panel_trayectoria_funciones_robustas(
+            robust_ax,
+            result,
+            state,
+            method="huber",
+            limits=limits,
+        )
+        self._dibujar_curva_kernel_funciones_robustas(
+            loss_ax,
+            result,
+            state,
+            quantity="loss",
+            title="Pérdida ρ(r)",
+            ylabel="coste",
+        )
+        self._dibujar_curva_kernel_funciones_robustas(
+            influence_ax,
+            result,
+            state,
+            quantity="influence",
+            title="Influencia ψ(r)",
+            ylabel="influencia",
+        )
+        self._dibujar_curva_kernel_funciones_robustas(
+            weight_ax,
+            result,
+            state,
+            quantity="weight",
+            title="Peso w(r)",
+            ylabel="peso",
+        )
+
+    def animate_robust_functions(
+        self,
+        result,
+        states,
+        title="Funciones robustas: mínimos cuadrados frente a Huber",
+        final_image_path=None,
+        repeat=False,
+    ):
+        """
+        Anima el mismo pose graph con coste cuadrático y con Huber.
+
+        La imagen final muestra:
+        - la trayectoria deformada por el falso factor;
+        - la solución robusta próxima a la referencia limpia;
+        - el peso final del outlier;
+        - pérdida, influencia y peso de varios kernels.
+        """
+
+        if not states:
+            raise ValueError(
+                "La lista de estados de funciones robustas no puede estar vacía."
+            )
+        if result is None:
+            raise ValueError("El resultado de funciones robustas no puede ser nulo.")
+
+        required = {
+            "true_trajectory",
+            "initial_trajectory",
+            "clean_trajectory",
+            "quadratic_trajectory",
+            "robust_trajectory",
+            "graph",
+            "quadratic_optimization",
+            "robust_optimization",
+            "false_factor",
+            "correct_factor",
+            "kernel_curves",
+            "parameters",
+        }
+        missing = required.difference(result)
+        if missing:
+            raise ValueError(
+                "Faltan datos del resultado: " + ", ".join(sorted(missing))
+            )
+
+        (
+            fig,
+            info_ax,
+            quadratic_ax,
+            robust_ax,
+            loss_ax,
+            influence_ax,
+            weight_ax,
+        ) = self._preparar_figura_funciones_robustas(title)
+
+        if final_image_path is not None:
+            self._dibujar_estado_funciones_robustas(
+                info_ax=info_ax,
+                quadratic_ax=quadratic_ax,
+                robust_ax=robust_ax,
+                loss_ax=loss_ax,
+                influence_ax=influence_ax,
+                weight_ax=weight_ax,
+                result=result,
+                state=states[-1],
+            )
+            final_image_path = Path(final_image_path)
+            final_image_path.parent.mkdir(parents=True, exist_ok=True)
+            fig.savefig(final_image_path, dpi=200, bbox_inches="tight")
+            print(f"Imagen final guardada en: {final_image_path}")
+
+        def init():
+            self._dibujar_estado_funciones_robustas(
+                info_ax=info_ax,
+                quadratic_ax=quadratic_ax,
+                robust_ax=robust_ax,
+                loss_ax=loss_ax,
+                influence_ax=influence_ax,
+                weight_ax=weight_ax,
+                result=result,
+                state=states[0],
+            )
+            return []
+
+        def update(frame_index):
+            self._dibujar_estado_funciones_robustas(
+                info_ax=info_ax,
+                quadratic_ax=quadratic_ax,
+                robust_ax=robust_ax,
+                loss_ax=loss_ax,
+                influence_ax=influence_ax,
+                weight_ax=weight_ax,
                 result=result,
                 state=states[frame_index],
             )
