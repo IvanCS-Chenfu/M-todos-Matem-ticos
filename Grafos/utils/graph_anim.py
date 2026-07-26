@@ -30,6 +30,7 @@ class GraphAnimator:
     - introducción a SLAM mediante trayectoria real y deriva de odometría,
     - Pose Graph SLAM 2D con prior, odometría, cierre y optimización,
     - loop closure con reconocimiento, verificación geométrica y robustez,
+    - landmarks en SLAM con referencias conocidas y variables estimadas,
     - caminos mínimos con Bellman-Ford,
     - caminos mínimos con Floyd-Warshall,
     - árboles de expansión mínima con Prim y Kruskal,
@@ -21798,6 +21799,885 @@ class GraphAnimator:
                 drift_ax=drift_ax,
                 detection_ax=detection_ax,
                 corrected_ax=corrected_ax,
+                history_ax=history_ax,
+                result=result,
+                state=states[frame_index],
+            )
+            return []
+
+        self.animation = FuncAnimation(
+            fig,
+            update,
+            frames=len(states),
+            init_func=init,
+            interval=self.interval,
+            repeat=repeat,
+            blit=False,
+        )
+        plt.show()
+        return self.animation
+
+    # ------------------------------------------------------------------
+    # Elementos específicos de landmarks en SLAM
+    # ------------------------------------------------------------------
+
+    def _preparar_figura_landmarks_slam(self, title):
+        """Crea tres paneles geométricos, información y convergencia."""
+
+        fig = plt.figure(figsize=self.figsize)
+        grid = fig.add_gridspec(
+            2,
+            4,
+            width_ratios=[1.30, 2.35, 2.35, 2.35],
+            height_ratios=[4.75, 1.55],
+            wspace=0.10,
+            hspace=0.16,
+        )
+        info_ax = fig.add_subplot(grid[:, 0])
+        true_ax = fig.add_subplot(grid[0, 1])
+        initial_ax = fig.add_subplot(grid[0, 2])
+        optimized_ax = fig.add_subplot(grid[0, 3])
+        history_ax = fig.add_subplot(grid[1, 1:])
+        fig.suptitle(title, fontsize=15, fontweight="bold")
+        fig.subplots_adjust(
+            left=0.025,
+            right=0.985,
+            top=0.925,
+            bottom=0.055,
+        )
+        return fig, info_ax, true_ax, initial_ax, optimized_ax, history_ax
+
+    @staticmethod
+    def _limites_landmarks_slam(result):
+        """Calcula límites comunes para poses y landmarks."""
+
+        points = []
+        for key in ("true_state", "initial_state", "optimized_state"):
+            state = result[key]
+            points.append(np.asarray(state["poses"], dtype=float)[:, :2])
+            points.append(
+                np.asarray(list(state["landmarks"].values()), dtype=float)
+            )
+        all_points = np.vstack(points)
+        min_x, min_y = np.min(all_points, axis=0)
+        max_x, max_y = np.max(all_points, axis=0)
+        width = max(max_x - min_x, 1.0)
+        height = max(max_y - min_y, 1.0)
+        return (
+            min_x - 0.11 * width - 0.35,
+            max_x + 0.11 * width + 0.35,
+            min_y - 0.16 * height - 0.35,
+            max_y + 0.16 * height + 0.35,
+        )
+
+    def _configurar_eje_landmarks_slam(self, ax, title, limits):
+        """Aplica una configuración geométrica común a cada panel."""
+
+        ax.clear()
+        ax.set_title(title, fontsize=10.5, fontweight="bold")
+        ax.set_xlim(limits[0], limits[1])
+        ax.set_ylim(limits[2], limits[3])
+        ax.set_aspect("equal", adjustable="box")
+        ax.grid(True, alpha=0.18)
+        ax.set_xlabel("x [m]", fontsize=7.5)
+        ax.set_ylabel("y [m]", fontsize=7.5)
+        ax.tick_params(labelsize=6.8)
+
+    @staticmethod
+    def _dibujar_flechas_poses_landmarks(
+        ax,
+        poses,
+        count,
+        color,
+        label,
+        alpha=1.0,
+        line_width=2.0,
+    ):
+        """Dibuja una trayectoria y pequeñas flechas de orientación."""
+
+        poses = np.asarray(poses, dtype=float)
+        count = max(0, min(int(count), len(poses)))
+        if count == 0:
+            return
+        visible = poses[:count]
+        ax.plot(
+            visible[:, 0],
+            visible[:, 1],
+            color=color,
+            linewidth=line_width,
+            alpha=alpha,
+            label=label,
+            zorder=16,
+        )
+        ax.scatter(
+            visible[:, 0],
+            visible[:, 1],
+            s=21,
+            color=color,
+            alpha=alpha,
+            edgecolors="white",
+            linewidths=0.45,
+            zorder=21,
+        )
+        step = max(1, len(visible) // 7)
+        sampled = visible[::step]
+        ax.quiver(
+            sampled[:, 0],
+            sampled[:, 1],
+            np.cos(sampled[:, 2]),
+            np.sin(sampled[:, 2]),
+            angles="xy",
+            scale_units="xy",
+            scale=1.0 / 0.32,
+            color=color,
+            width=0.006,
+            alpha=alpha,
+            zorder=24,
+        )
+
+    @staticmethod
+    def _dibujar_landmarks_por_tipo(
+        ax,
+        positions,
+        known_names,
+        visible_count,
+        *,
+        unknown_color,
+        unknown_label,
+        known_label="Conocido y fijo",
+        alpha=1.0,
+        annotate=True,
+        active_landmark=None,
+    ):
+        """Dibuja referencias conocidas y desconocidas con símbolos distintos."""
+
+        names = sorted(positions, key=lambda name: int(name[1:]))
+        names = names[: max(0, min(int(visible_count), len(names)))]
+        known_names = set(known_names)
+        known = [name for name in names if name in known_names]
+        unknown = [name for name in names if name not in known_names]
+
+        if known:
+            xy = np.asarray([positions[name] for name in known], dtype=float)
+            ax.scatter(
+                xy[:, 0], xy[:, 1], s=95, marker="s",
+                color="#E45756", edgecolors="#7A1D1D", linewidths=1.4,
+                alpha=alpha, label=known_label, zorder=30,
+            )
+        if unknown:
+            xy = np.asarray([positions[name] for name in unknown], dtype=float)
+            ax.scatter(
+                xy[:, 0], xy[:, 1], s=90, marker="D",
+                color=unknown_color, edgecolors="#4F3562", linewidths=1.2,
+                alpha=alpha, label=unknown_label, zorder=29,
+            )
+
+        if annotate:
+            for name in names:
+                x, y = positions[name]
+                active = name == active_landmark
+                ax.text(
+                    x,
+                    y + 0.24,
+                    name,
+                    fontsize=7.0 if not active else 8.2,
+                    fontweight="bold",
+                    ha="center",
+                    va="bottom",
+                    color="#222222",
+                    zorder=36,
+                    bbox=(
+                        {
+                            "boxstyle": "round,pad=0.17",
+                            "fc": "#FFF3CD",
+                            "ec": "#C28A00",
+                            "alpha": 0.98,
+                        }
+                        if active
+                        else None
+                    ),
+                )
+
+    @staticmethod
+    def _dibujar_observaciones_landmarks_slam(
+        ax,
+        observations,
+        poses,
+        landmarks,
+        visible_count,
+        color="#2E8B57",
+        alpha=0.25,
+        line_width=0.9,
+        active_pose=None,
+        active_landmark=None,
+    ):
+        """Dibuja aristas pose-landmark visibles en un estado."""
+
+        observations = list(observations)[: max(0, int(visible_count))]
+        for observation in observations:
+            pose_index = int(observation["pose_name"][1:])
+            landmark_name = observation["landmark_name"]
+            p = np.asarray(poses[pose_index][:2], dtype=float)
+            l = np.asarray(landmarks[landmark_name], dtype=float)
+            active = (
+                pose_index == active_pose
+                or landmark_name == active_landmark
+            )
+            ax.plot(
+                [p[0], l[0]],
+                [p[1], l[1]],
+                color="#E45756" if active else color,
+                linewidth=2.2 if active else line_width,
+                alpha=0.88 if active else alpha,
+                linestyle="solid" if active else "-",
+                zorder=12 if active else 8,
+            )
+
+    @staticmethod
+    def _dibujar_campo_vision_landmarks_slam(
+        ax,
+        pose,
+        campo_vision_grados,
+        alcance,
+    ):
+        """Dibuja dos rayos y un arco para el campo de visión activo."""
+
+        pose = np.asarray(pose, dtype=float)
+        semiangulo = np.deg2rad(float(campo_vision_grados)) / 2.0
+        for angle in (pose[2] - semiangulo, pose[2] + semiangulo):
+            end = pose[:2] + float(alcance) * np.array(
+                [np.cos(angle), np.sin(angle)], dtype=float
+            )
+            ax.plot(
+                [pose[0], end[0]], [pose[1], end[1]],
+                color="#F28E2B", linewidth=1.1, linestyle="dashed",
+                alpha=0.55, zorder=7,
+            )
+        arc = Arc(
+            (pose[0], pose[1]),
+            2.0 * float(alcance),
+            2.0 * float(alcance),
+            angle=0.0,
+            theta1=degrees(pose[2] - semiangulo),
+            theta2=degrees(pose[2] + semiangulo),
+            color="#F28E2B",
+            linewidth=1.1,
+            linestyle="dashed",
+            alpha=0.55,
+            zorder=7,
+        )
+        ax.add_patch(arc)
+
+    def _dibujar_leyenda_landmarks_slam(self, ax):
+        """Añade una leyenda compacta y estable."""
+
+        handles = [
+            Line2D([0], [0], color="#777777", linewidth=2.0, label="Real"),
+            Line2D([0], [0], color="#F28E2B", linewidth=2.0, label="Inicial"),
+            Line2D([0], [0], color="#4C9ED9", linewidth=2.0, label="Optimizada"),
+            Line2D(
+                [0], [0], marker="s", color="none", markerfacecolor="#E45756",
+                markeredgecolor="#7A1D1D", markersize=7, label="Landmark conocido",
+            ),
+            Line2D(
+                [0], [0], marker="D", color="none", markerfacecolor="#8E5EA2",
+                markeredgecolor="#4F3562", markersize=7, label="Landmark real",
+            ),
+            Line2D(
+                [0], [0], color="#2E8B57", linewidth=1.6,
+                alpha=0.65, label="Observación",
+            ),
+        ]
+        ax.legend(
+            handles=handles,
+            loc="upper left",
+            fontsize=5.9,
+            ncol=2,
+            framealpha=0.94,
+            borderpad=0.42,
+            columnspacing=0.7,
+            handlelength=1.8,
+        )
+
+    def _dibujar_panel_real_landmarks(self, ax, result, state, limits):
+        """Dibuja la geometría verdadera y las observaciones disponibles."""
+
+        self._configurar_eje_landmarks_slam(ax, "1. Geometría real", limits)
+        true_state = result["true_state"]
+        pose_count = state.get("visible_pose_count", 0)
+        landmark_count = state.get("visible_landmark_count", 0)
+        observation_count = state.get("visible_observation_count", 0)
+
+        self._dibujar_observaciones_landmarks_slam(
+            ax,
+            result["observations"],
+            true_state["poses"],
+            true_state["landmarks"],
+            observation_count,
+            color="#2E8B57",
+            alpha=0.23,
+            active_pose=state.get("active_pose"),
+            active_landmark=state.get("active_landmark"),
+        )
+        self._dibujar_flechas_poses_landmarks(
+            ax,
+            true_state["poses"],
+            pose_count,
+            "#777777",
+            "Trayectoria real",
+            alpha=0.92,
+        )
+        self._dibujar_landmarks_por_tipo(
+            ax,
+            true_state["landmarks"],
+            result["graph"].graph["known_landmarks"],
+            landmark_count,
+            unknown_color="#8E5EA2",
+            unknown_label="Landmark real",
+            alpha=0.95,
+            active_landmark=state.get("active_landmark"),
+        )
+
+        active_pose = state.get("active_pose")
+        if state.get("show_fov") and active_pose is not None:
+            self._dibujar_campo_vision_landmarks_slam(
+                ax,
+                true_state["poses"][active_pose],
+                250.0,
+                2.0,
+            )
+        ax.text(
+            0.02,
+            0.02,
+            "Las líneas verdes son factores pose-landmark.",
+            transform=ax.transAxes,
+            fontsize=6.5,
+            ha="left",
+            va="bottom",
+            color="#444444",
+        )
+        self._dibujar_leyenda_landmarks_slam(ax)
+
+    def _dibujar_panel_inicial_landmarks(self, ax, result, state, limits):
+        """Dibuja la odometría con deriva y landmarks inicializados."""
+
+        self._configurar_eje_landmarks_slam(ax, "2. Estimación inicial", limits)
+        true_state = result["true_state"]
+        initial_state = result["initial_state"]
+        pose_count = state.get("visible_pose_count", 0)
+        landmark_count = state.get("visible_landmark_count", 0)
+        observation_count = state.get("visible_observation_count", 0)
+
+        if state.get("show_true"):
+            self._dibujar_flechas_poses_landmarks(
+                ax,
+                true_state["poses"],
+                pose_count,
+                "#999999",
+                "Real",
+                alpha=0.48,
+                line_width=1.4,
+            )
+            self._dibujar_landmarks_por_tipo(
+                ax,
+                true_state["landmarks"],
+                result["graph"].graph["known_landmarks"],
+                landmark_count,
+                unknown_color="#BCA8C9",
+                unknown_label="Landmark real",
+                alpha=0.52,
+                annotate=False,
+            )
+
+        if state.get("show_initial"):
+            self._dibujar_observaciones_landmarks_slam(
+                ax,
+                result["observations"],
+                initial_state["poses"],
+                initial_state["landmarks"],
+                observation_count,
+                color="#7AAE74",
+                alpha=0.18,
+                active_pose=state.get("active_pose"),
+                active_landmark=state.get("active_landmark"),
+            )
+            self._dibujar_flechas_poses_landmarks(
+                ax,
+                initial_state["poses"],
+                pose_count,
+                "#F28E2B",
+                "Inicial",
+                alpha=0.95,
+                line_width=2.1,
+            )
+            self._dibujar_landmarks_por_tipo(
+                ax,
+                initial_state["landmarks"],
+                result["graph"].graph["known_landmarks"],
+                landmark_count,
+                unknown_color="#F6C85F",
+                unknown_label="Landmark inicial",
+                alpha=0.96,
+                active_landmark=state.get("active_landmark"),
+            )
+
+        metrics = result["initial_pose_metrics"]
+        landmark_metrics = result["initial_landmark_metrics"]
+        ax.text(
+            0.98,
+            0.02,
+            (
+                f"RMSE poses: {metrics['position_rmse']:.3f} m\n"
+                f"RMSE landmarks: {landmark_metrics['rmse']:.3f} m"
+            ),
+            transform=ax.transAxes,
+            fontsize=6.6,
+            ha="right",
+            va="bottom",
+            bbox={
+                "boxstyle": "round,pad=0.28",
+                "fc": "white",
+                "ec": "#999999",
+                "alpha": 0.94,
+            },
+        )
+        self._dibujar_leyenda_landmarks_slam(ax)
+
+    def _dibujar_panel_optimizado_landmarks(self, ax, result, state, limits):
+        """Dibuja el estado actual o la solución final optimizada."""
+
+        self._configurar_eje_landmarks_slam(ax, "3. Optimización conjunta", limits)
+        true_state = result["true_state"]
+        current = state.get("current_state")
+        if current is None:
+            current = result["initial_state"]
+        pose_count = state.get("visible_pose_count", 0)
+        landmark_count = state.get("visible_landmark_count", 0)
+        observation_count = state.get("visible_observation_count", 0)
+
+        self._dibujar_flechas_poses_landmarks(
+            ax,
+            true_state["poses"],
+            pose_count,
+            "#999999",
+            "Real",
+            alpha=0.42,
+            line_width=1.4,
+        )
+        self._dibujar_landmarks_por_tipo(
+            ax,
+            true_state["landmarks"],
+            result["graph"].graph["known_landmarks"],
+            landmark_count,
+            unknown_color="#BCA8C9",
+            unknown_label="Landmark real",
+            alpha=0.45,
+            annotate=False,
+        )
+
+        if state.get("show_current") or state.get("phase") in {
+            "unknown_landmarks", "factor_graph", "optimization",
+            "comparison", "summary",
+        }:
+            self._dibujar_observaciones_landmarks_slam(
+                ax,
+                result["observations"],
+                current["poses"],
+                current["landmarks"],
+                observation_count,
+                color="#2E8B57",
+                alpha=0.23,
+                active_pose=state.get("active_pose"),
+                active_landmark=state.get("active_landmark"),
+            )
+            self._dibujar_flechas_poses_landmarks(
+                ax,
+                current["poses"],
+                pose_count,
+                "#4C9ED9",
+                "Actual / optimizada",
+                alpha=0.96,
+                line_width=2.2,
+            )
+            self._dibujar_landmarks_por_tipo(
+                ax,
+                current["landmarks"],
+                result["graph"].graph["known_landmarks"],
+                landmark_count,
+                unknown_color="#4C9ED9",
+                unknown_label="Landmark estimado",
+                alpha=0.97,
+                active_landmark=state.get("active_landmark"),
+            )
+
+        iteration = state.get("iteration")
+        status = "Sin optimizar" if iteration is None else f"Iteración {iteration}"
+        ax.text(
+            0.98,
+            0.02,
+            (
+                f"{status}\n"
+                f"coste: {state.get('cost') if state.get('cost') is not None else result['initial_system']['cost']:.3f}\n"
+                f"obs.: {state.get('observation_rmse') if state.get('observation_rmse') is not None else result['initial_observation_metrics']['rmse']:.3f} m"
+            ),
+            transform=ax.transAxes,
+            fontsize=6.5,
+            ha="right",
+            va="bottom",
+            bbox={
+                "boxstyle": "round,pad=0.28",
+                "fc": "white",
+                "ec": "#999999",
+                "alpha": 0.94,
+            },
+        )
+        self._dibujar_leyenda_landmarks_slam(ax)
+
+    def _dibujar_info_landmarks_slam(self, ax, result, state):
+        """Dibuja tarjetas explicativas y métricas del estado actual."""
+
+        ax.clear()
+        ax.axis("off")
+        ax.set_xlim(0, 1)
+        ax.set_ylim(0, 1)
+
+        graph = result["graph"]
+        ax.text(
+            0.50,
+            0.985,
+            "Landmarks en SLAM",
+            fontsize=12.0,
+            fontweight="bold",
+            ha="center",
+            va="top",
+        )
+        ax.text(
+            0.50,
+            0.945,
+            "poses + referencias + observaciones",
+            fontsize=7.2,
+            ha="center",
+            va="top",
+            color="#444444",
+        )
+
+        cards = [
+            ("Poses", len(result["true_state"]["poses"]), "#B7D7F0"),
+            ("Landmarks", len(result["true_state"]["landmarks"]), "#D8C4E8"),
+            ("Conocidos", len(graph.graph["known_landmarks"]), "#F6B4B4"),
+            ("Variables", len(graph.graph["unknown_landmarks"]), "#FBE5A6"),
+            ("Observaciones", len(result["observations"]), "#B7E4C7"),
+            ("Estado", graph.graph["state_dimension"], "#CDE7E8"),
+        ]
+        y = 0.870
+        for label, value, color in cards:
+            rectangle = Rectangle(
+                (0.10, y), 0.80, 0.065,
+                facecolor=color, edgecolor="#666666", linewidth=1.0,
+            )
+            ax.add_patch(rectangle)
+            ax.text(
+                0.17, y + 0.0325, label,
+                fontsize=7.2, fontweight="bold", ha="left", va="center",
+            )
+            ax.text(
+                0.83, y + 0.0325, str(value),
+                fontsize=7.5, fontweight="bold", ha="right", va="center",
+            )
+            y -= 0.074
+
+        cost = state.get("cost")
+        pose_rmse = state.get("pose_rmse")
+        landmark_rmse = state.get("landmark_rmse")
+        observation_rmse = state.get("observation_rmse")
+        if cost is None:
+            cost = result["initial_system"]["cost"]
+        if pose_rmse is None:
+            pose_rmse = result["initial_pose_metrics"]["position_rmse"]
+        if landmark_rmse is None:
+            landmark_rmse = result["initial_landmark_metrics"]["rmse"]
+        if observation_rmse is None:
+            observation_rmse = result["initial_observation_metrics"]["rmse"]
+
+        ax.text(
+            0.50,
+            0.405,
+            (
+                f"Coste: {cost:.5f}\n"
+                f"RMSE poses: {pose_rmse:.5f} m\n"
+                f"RMSE landmarks: {landmark_rmse:.5f} m\n"
+                f"RMSE observación: {observation_rmse:.5f} m"
+            ),
+            fontsize=7.1,
+            ha="center",
+            va="center",
+            linespacing=1.45,
+            bbox={
+                "boxstyle": "round,pad=0.42",
+                "fc": "white",
+                "ec": "#777777",
+                "alpha": 0.98,
+            },
+        )
+
+        damping = state.get("damping")
+        step_norm = state.get("step_norm")
+        iteration = state.get("iteration")
+        if iteration is not None:
+            damping_text = "—" if damping is None else f"{damping:.3g}"
+            step_text = "—" if step_norm is None else f"{step_norm:.3g}"
+            ax.text(
+                0.50,
+                0.278,
+                (
+                    f"iteración {iteration}\n"
+                    f"λ={damping_text} · ‖Δ‖={step_text}\n"
+                    f"paso {'aceptado' if state.get('accepted') else 'resumen'}"
+                ),
+                fontsize=6.8,
+                ha="center",
+                va="center",
+                linespacing=1.35,
+                bbox={
+                    "boxstyle": "round,pad=0.35",
+                    "fc": "#EEF6FB",
+                    "ec": "#4C9ED9",
+                    "alpha": 0.97,
+                },
+            )
+
+        message_words = str(state.get("message", "")).split()
+        message_lines = []
+        current_line = []
+        for word in message_words:
+            candidate = " ".join(current_line + [word])
+            if current_line and len(candidate) > 31:
+                message_lines.append(" ".join(current_line))
+                current_line = [word]
+            else:
+                current_line.append(word)
+        if current_line:
+            message_lines.append(" ".join(current_line))
+        wrapped_message = "\n".join(message_lines)
+
+        ax.text(
+            0.50,
+            0.166,
+            wrapped_message,
+            fontsize=6.8,
+            ha="center",
+            va="center",
+            wrap=True,
+            bbox={
+                "boxstyle": "round,pad=0.38",
+                "fc": "white",
+                "ec": "#777777",
+                "alpha": 0.97,
+            },
+        )
+        if state.get("show_graph_connections"):
+            ax.text(
+                0.50,
+                0.082,
+                "OpenCV · AprilTags · características · mapas semánticos",
+                fontsize=6.0,
+                fontweight="bold",
+                ha="center",
+                va="center",
+                color="#333333",
+                wrap=True,
+            )
+        ax.text(
+            0.50,
+            0.018,
+            f"Estado {state.get('step', 1)} de {state.get('total_steps', 1)}",
+            fontsize=6.4,
+            ha="center",
+            va="bottom",
+            color="#555555",
+        )
+
+    def _dibujar_historial_landmarks_slam(self, ax, result, state):
+        """Dibuja coste y errores normalizados por iteración."""
+
+        ax.clear()
+        ax.grid(True, alpha=0.22)
+        ax.set_title(
+            "Convergencia de poses, landmarks y observaciones",
+            fontsize=10.1,
+            fontweight="bold",
+        )
+        ax.set_xlabel("Iteración", fontsize=7.5)
+
+        history = list(result["optimization"]["history"])
+        costs = [float(result["initial_system"]["cost"])]
+        pose_rmses = [float(result["initial_pose_metrics"]["position_rmse"])]
+        landmark_rmses = [float(result["initial_landmark_metrics"]["rmse"])]
+        observation_rmses = [
+            float(result["initial_observation_metrics"]["rmse"])
+        ]
+        for entry in history:
+            costs.append(float(entry["cost_after"]))
+            pose_rmses.append(float(entry["pose_rmse_after"]))
+            landmark_rmses.append(float(entry["landmark_rmse_after"]))
+            observation_rmses.append(float(entry["observation_rmse_after"]))
+
+        iteration = state.get("iteration")
+        if state.get("show_history"):
+            visible_count = len(costs) if iteration is None else min(
+                len(costs), int(iteration) + 1
+            )
+        else:
+            visible_count = 1
+        x_values = np.arange(visible_count)
+
+        def normalize(values):
+            values = np.asarray(values[:visible_count], dtype=float)
+            base = max(abs(float(values[0])), 1e-12)
+            return values / base
+
+        ax.plot(
+            x_values, normalize(costs), marker="o", linewidth=2.1,
+            markersize=4.0, color="#E45756", label="coste / inicial",
+        )
+        ax.plot(
+            x_values, normalize(pose_rmses), marker="o", linewidth=1.9,
+            markersize=3.8, color="#4C9ED9", label="RMSE poses / inicial",
+        )
+        ax.plot(
+            x_values, normalize(landmark_rmses), marker="D", linewidth=1.9,
+            markersize=3.6, color="#8E5EA2", label="RMSE landmarks / inicial",
+        )
+        ax.plot(
+            x_values, normalize(observation_rmses), marker="s", linewidth=1.8,
+            markersize=3.6, color="#2E8B57", label="RMSE observación / inicial",
+        )
+        ax.axhline(1.0, color="#999999", linewidth=1.0, linestyle="dotted")
+        ax.set_ylim(bottom=0.0)
+        ax.set_xlim(-0.2, max(len(costs) - 0.8, 1.2))
+        ax.legend(loc="upper right", fontsize=6.7, ncol=4, framealpha=0.95)
+        ax.text(
+            0.01,
+            0.03,
+            "Los landmarks conocidos permanecen fijos; poses y referencias desconocidas convergen.",
+            transform=ax.transAxes,
+            fontsize=6.6,
+            ha="left",
+            va="bottom",
+            color="#444444",
+        )
+
+    def _dibujar_estado_landmarks_slam(
+        self,
+        info_ax,
+        true_ax,
+        initial_ax,
+        optimized_ax,
+        history_ax,
+        result,
+        state,
+    ):
+        """Dibuja un estado completo del ejemplo de landmarks."""
+
+        limits = self._limites_landmarks_slam(result)
+        self._dibujar_info_landmarks_slam(info_ax, result, state)
+        self._dibujar_panel_real_landmarks(true_ax, result, state, limits)
+        self._dibujar_panel_inicial_landmarks(initial_ax, result, state, limits)
+        self._dibujar_panel_optimizado_landmarks(
+            optimized_ax, result, state, limits
+        )
+        self._dibujar_historial_landmarks_slam(history_ax, result, state)
+
+    def animate_landmarks_slam(
+        self,
+        result,
+        states,
+        title="Landmarks en SLAM",
+        final_image_path=None,
+        repeat=False,
+    ):
+        """
+        Anima la construcción y optimización de un grafo pose-landmark.
+
+        La imagen final muestra:
+        - geometría real;
+        - odometría y landmarks iniciales;
+        - trayectoria y landmarks optimizados;
+        - observaciones pose-landmark;
+        - convergencia de coste y errores.
+        """
+
+        if not states:
+            raise ValueError(
+                "La lista de estados de landmarks SLAM no puede estar vacía."
+            )
+        if result is None:
+            raise ValueError("El resultado de landmarks SLAM no puede ser nulo.")
+
+        required = {
+            "graph",
+            "true_state",
+            "initial_state",
+            "optimized_state",
+            "observations",
+            "initial_system",
+            "final_system",
+            "initial_pose_metrics",
+            "final_pose_metrics",
+            "initial_landmark_metrics",
+            "final_landmark_metrics",
+            "initial_observation_metrics",
+            "final_observation_metrics",
+            "optimization",
+        }
+        missing = required.difference(result)
+        if missing:
+            raise ValueError(
+                "Faltan datos del resultado: " + ", ".join(sorted(missing))
+            )
+
+        (
+            fig,
+            info_ax,
+            true_ax,
+            initial_ax,
+            optimized_ax,
+            history_ax,
+        ) = self._preparar_figura_landmarks_slam(title)
+
+        if final_image_path is not None:
+            self._dibujar_estado_landmarks_slam(
+                info_ax=info_ax,
+                true_ax=true_ax,
+                initial_ax=initial_ax,
+                optimized_ax=optimized_ax,
+                history_ax=history_ax,
+                result=result,
+                state=states[-1],
+            )
+            final_image_path = Path(final_image_path)
+            final_image_path.parent.mkdir(parents=True, exist_ok=True)
+            fig.savefig(final_image_path, dpi=200, bbox_inches="tight")
+            print(f"Imagen final guardada en: {final_image_path}")
+
+        def init():
+            self._dibujar_estado_landmarks_slam(
+                info_ax=info_ax,
+                true_ax=true_ax,
+                initial_ax=initial_ax,
+                optimized_ax=optimized_ax,
+                history_ax=history_ax,
+                result=result,
+                state=states[0],
+            )
+            return []
+
+        def update(frame_index):
+            self._dibujar_estado_landmarks_slam(
+                info_ax=info_ax,
+                true_ax=true_ax,
+                initial_ax=initial_ax,
+                optimized_ax=optimized_ax,
                 history_ax=history_ax,
                 result=result,
                 state=states[frame_index],
