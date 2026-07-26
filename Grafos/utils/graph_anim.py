@@ -28,6 +28,7 @@ class GraphAnimator:
     - optimización no lineal iterativa con Gauss-Newton y Levenberg-Marquardt,
     - jacobianos, Hessianas y estructura dispersa en pose graphs,
     - introducción a SLAM mediante trayectoria real y deriva de odometría,
+    - Pose Graph SLAM 2D con prior, odometría, cierre y optimización,
     - caminos mínimos con Bellman-Ford,
     - caminos mínimos con Floyd-Warshall,
     - árboles de expansión mínima con Prim y Kruskal,
@@ -20075,6 +20076,801 @@ class GraphAnimator:
                 error_ax=error_ax,
                 diagnostic_ax=diagnostic_ax,
                 simulation=simulation,
+                state=states[frame_index],
+            )
+            return []
+
+        self.animation = FuncAnimation(
+            fig,
+            update,
+            frames=len(states),
+            init_func=init,
+            interval=self.interval,
+            repeat=repeat,
+            blit=False,
+        )
+
+        plt.show()
+        return self.animation
+    # ------------------------------------------------------------------
+    # Elementos específicos de Pose Graph SLAM 2D
+    # ------------------------------------------------------------------
+
+    def _preparar_figura_pose_graph_slam(self, title):
+        """
+        Crea una figura centrada en la comparación antes/después.
+
+        Distribución:
+        - izquierda: explicación, métricas y leyenda;
+        - centro superior: pose graph antes de optimizar;
+        - derecha superior: pose graph durante/después de optimizar;
+        - parte inferior: evolución del coste, RMSE y error de cierre.
+        """
+
+        fig = plt.figure(figsize=self.figsize)
+        grid = fig.add_gridspec(
+            2,
+            3,
+            width_ratios=[1.55, 3.15, 3.15],
+            height_ratios=[4.55, 1.55],
+            wspace=0.10,
+            hspace=0.14,
+        )
+
+        info_ax = fig.add_subplot(grid[:, 0])
+        initial_ax = fig.add_subplot(grid[0, 1])
+        optimized_ax = fig.add_subplot(grid[0, 2])
+        history_ax = fig.add_subplot(grid[1, 1:])
+
+        fig.suptitle(title, fontsize=15, fontweight="bold")
+        fig.subplots_adjust(
+            left=0.025,
+            right=0.985,
+            top=0.925,
+            bottom=0.055,
+        )
+
+        return fig, info_ax, initial_ax, optimized_ax, history_ax
+
+    @staticmethod
+    def _limites_pose_graph_slam(result):
+        """Calcula límites comunes para los dos paneles geométricos."""
+
+        trajectories = [
+            np.asarray(result["true_trajectory"], dtype=float),
+            np.asarray(result["initial_trajectory"], dtype=float),
+            np.asarray(result["optimized_trajectory"], dtype=float),
+        ]
+        points = np.vstack([trajectory[:, :2] for trajectory in trajectories])
+        minimum = np.min(points, axis=0)
+        maximum = np.max(points, axis=0)
+        span = np.maximum(maximum - minimum, 1.0)
+        margin = 0.12 * span + np.array([0.45, 0.45])
+        return (
+            minimum[0] - margin[0],
+            maximum[0] + margin[0],
+            minimum[1] - margin[1],
+            maximum[1] + margin[1],
+        )
+
+    def _dibujar_leyenda_pose_graph_slam(self, ax):
+        """Dibuja una leyenda compacta para el ejemplo."""
+
+        elements = [
+            Line2D(
+                [0],
+                [0],
+                color="#777777",
+                linewidth=2.0,
+                linestyle="dashed",
+                label="Trayectoria real",
+            ),
+            Line2D(
+                [0],
+                [0],
+                color="#F28E2B",
+                linewidth=2.8,
+                label="Estimación inicial",
+            ),
+            Line2D(
+                [0],
+                [0],
+                color="#4C9ED9",
+                linewidth=2.8,
+                label="Estimación optimizada",
+            ),
+            Line2D(
+                [0],
+                [0],
+                color="#2E8B57",
+                linewidth=2.5,
+                label="Odometría",
+            ),
+            Line2D(
+                [0],
+                [0],
+                color="#8E5EA2",
+                linewidth=2.8,
+                linestyle="dashed",
+                label="Cierre de ciclo",
+            ),
+            Line2D(
+                [0],
+                [0],
+                marker="s",
+                color="none",
+                markerfacecolor="#E45756",
+                markeredgecolor="#7A1D1D",
+                markersize=8,
+                label="Prior sobre x0",
+            ),
+        ]
+
+        ax.legend(
+            handles=elements,
+            loc="lower center",
+            bbox_to_anchor=(0.5, 0.025),
+            fontsize=6.7,
+            framealpha=0.97,
+            ncol=2,
+            columnspacing=0.7,
+            handlelength=2.2,
+            borderpad=0.55,
+        )
+
+    @staticmethod
+    def _formatear_numero_pose_graph(valor, precision=4):
+        """Formatea magnitudes opcionales del panel de métricas."""
+
+        if valor is None:
+            return "—"
+        valor = float(valor)
+        if not np.isfinite(valor):
+            return "∞"
+        return f"{valor:.{precision}f}"
+
+    def _dibujar_panel_pose_graph_slam(
+        self,
+        ax,
+        result,
+        trajectory,
+        state,
+        panel_kind,
+        title,
+    ):
+        """Dibuja una trayectoria como pose graph 2D."""
+
+        ax.clear()
+        ax.set_title(title, fontsize=11.3, fontweight="bold")
+        ax.set_xlabel("x [m]", fontsize=8)
+        ax.set_ylabel("y [m]", fontsize=8)
+        ax.grid(True, alpha=0.22)
+        ax.set_aspect("equal", adjustable="box")
+
+        limits = self._limites_pose_graph_slam(result)
+        ax.set_xlim(limits[0], limits[1])
+        ax.set_ylim(limits[2], limits[3])
+
+        graph = result["graph"]
+        true_trajectory = np.asarray(result["true_trajectory"], dtype=float)
+        initial_trajectory = np.asarray(result["initial_trajectory"], dtype=float)
+        trajectory = np.asarray(trajectory, dtype=float)
+
+        visible_pose_count = int(
+            np.clip(
+                state.get("visible_pose_count", len(trajectory)),
+                0,
+                len(trajectory),
+            )
+        )
+        visible_odometry_count = int(
+            np.clip(
+                state.get("visible_odometry_count", len(trajectory) - 1),
+                0,
+                len(trajectory) - 1,
+            )
+        )
+
+        if state.get("show_true", True) and visible_pose_count > 0:
+            ax.plot(
+                true_trajectory[:visible_pose_count, 0],
+                true_trajectory[:visible_pose_count, 1],
+                color="#777777",
+                linewidth=1.8,
+                linestyle="dashed",
+                alpha=0.82,
+                zorder=4,
+                label="Trayectoria real",
+            )
+
+        if visible_pose_count > 0:
+            if panel_kind == "initial":
+                trajectory_color = "#F28E2B"
+                node_face = "#F6C85F"
+                node_edge = "#8A4B08"
+            else:
+                trajectory_color = "#4C9ED9"
+                node_face = "#B7D7F0"
+                node_edge = "#1F4F73"
+
+            ax.plot(
+                trajectory[:visible_pose_count, 0],
+                trajectory[:visible_pose_count, 1],
+                color=trajectory_color,
+                linewidth=2.5,
+                alpha=0.92,
+                zorder=9,
+            )
+
+            # Aristas de odometría visibles.
+            for index in range(visible_odometry_count):
+                if index + 1 >= visible_pose_count:
+                    break
+                p0 = trajectory[index, :2]
+                p1 = trajectory[index + 1, :2]
+                ax.plot(
+                    [p0[0], p1[0]],
+                    [p0[1], p1[1]],
+                    color="#2E8B57",
+                    linewidth=1.7,
+                    alpha=0.70,
+                    zorder=10,
+                )
+
+            ax.scatter(
+                trajectory[:visible_pose_count, 0],
+                trajectory[:visible_pose_count, 1],
+                s=38,
+                color=node_face,
+                edgecolors=node_edge,
+                linewidths=1.1,
+                zorder=20,
+            )
+
+            # Etiquetas y orientaciones de una selección de poses.
+            label_indices = set(range(0, visible_pose_count, 2))
+            label_indices.update({0, visible_pose_count - 1})
+
+            for index in sorted(label_indices):
+                x, y, theta = trajectory[index]
+                ax.text(
+                    x,
+                    y + 0.22,
+                    f"x{index}",
+                    fontsize=6.4,
+                    fontweight="bold",
+                    ha="center",
+                    va="bottom",
+                    color="#222222",
+                    zorder=30,
+                )
+                length = 0.28
+                ax.arrow(
+                    x,
+                    y,
+                    length * np.cos(theta),
+                    length * np.sin(theta),
+                    width=0.010,
+                    head_width=0.085,
+                    head_length=0.090,
+                    color=node_edge,
+                    length_includes_head=True,
+                    zorder=24,
+                    alpha=0.85,
+                )
+
+        if state.get("show_prior") and visible_pose_count > 0:
+            x0, y0 = trajectory[0, :2]
+            ax.scatter(
+                [x0],
+                [y0],
+                s=115,
+                marker="s",
+                color="#E45756",
+                edgecolors="#7A1D1D",
+                linewidths=2.0,
+                zorder=35,
+            )
+            ax.text(
+                x0,
+                y0 - 0.36,
+                "prior",
+                fontsize=7.0,
+                fontweight="bold",
+                ha="center",
+                va="top",
+                color="#7A1D1D",
+                zorder=36,
+            )
+
+        if state.get("show_loop") and visible_pose_count == len(trajectory):
+            start = trajectory[-1, :2]
+            end = trajectory[0, :2]
+            arrow = FancyArrowPatch(
+                start,
+                end,
+                arrowstyle="-|>",
+                mutation_scale=15,
+                linewidth=2.8,
+                linestyle="dashed",
+                color="#8E5EA2",
+                connectionstyle="arc3,rad=0.28",
+                shrinkA=7,
+                shrinkB=8,
+                zorder=32,
+            )
+            ax.add_patch(arrow)
+            middle = 0.5 * (start + end)
+            ax.text(
+                middle[0],
+                middle[1] - 0.48,
+                "loop  x15 → x0",
+                fontsize=7.0,
+                fontweight="bold",
+                ha="center",
+                va="top",
+                color="#5A316B",
+                zorder=35,
+                bbox={
+                    "boxstyle": "round,pad=0.22",
+                    "fc": "white",
+                    "ec": "#8E5EA2",
+                    "alpha": 0.94,
+                },
+            )
+
+            # Vector de cierre espacial, útil en el panel inicial.
+            ax.plot(
+                [trajectory[-1, 0], trajectory[0, 0]],
+                [trajectory[-1, 1], trajectory[0, 1]],
+                color="#C62828",
+                linewidth=2.0,
+                linestyle=":",
+                zorder=31,
+            )
+
+        phase = state.get("phase", "")
+        if phase in {"optimization", "comparison", "summary"}:
+            if panel_kind == "initial":
+                panel_cost = result["initial_system"]["cost"]
+                panel_rmse = result["initial_metrics"]["position_rmse"]
+                panel_closure = result["initial_closure"]["translation"]
+            else:
+                panel_cost = state.get("cost")
+                panel_rmse = state.get("rmse")
+                panel_closure = state.get("closure_error")
+
+            ax.text(
+                0.02,
+                0.02,
+                (
+                    f"coste={self._formatear_numero_pose_graph(panel_cost, 3)}\n"
+                    f"RMSE={self._formatear_numero_pose_graph(panel_rmse, 3)} m\n"
+                    f"cierre={self._formatear_numero_pose_graph(panel_closure, 3)} m"
+                ),
+                transform=ax.transAxes,
+                fontsize=7.1,
+                ha="left",
+                va="bottom",
+                bbox={
+                    "boxstyle": "round,pad=0.32",
+                    "fc": "white",
+                    "ec": "#777777",
+                    "alpha": 0.95,
+                },
+                zorder=50,
+            )
+
+    def _dibujar_info_pose_graph_slam(self, ax, result, state):
+        """Dibuja explicación, métricas y conexiones conceptuales."""
+
+        ax.clear()
+        ax.axis("off")
+        ax.set_xlim(0, 1)
+        ax.set_ylim(0, 1)
+
+        initial_cost = float(result["initial_system"]["cost"])
+        final_cost = float(result["final_system"]["cost"])
+        initial_rmse = float(result["initial_metrics"]["position_rmse"])
+        final_rmse = float(result["final_metrics"]["position_rmse"])
+        initial_closure = float(result["initial_closure"]["translation"])
+        final_closure = float(result["final_closure"]["translation"])
+
+        ax.text(
+            0.50,
+            0.985,
+            "Pose Graph SLAM",
+            fontsize=12.2,
+            fontweight="bold",
+            ha="center",
+            va="top",
+        )
+
+        ax.text(
+            0.50,
+            0.940,
+            "poses = vértices\nmediciones = aristas",
+            fontsize=8.2,
+            ha="center",
+            va="top",
+            color="#444444",
+            linespacing=1.35,
+        )
+
+        cards = [
+            (
+                "Estructura",
+                (
+                    f"{result['graph'].number_of_nodes()} poses\n"
+                    f"15 odometrías\n1 cierre · 1 prior"
+                ),
+                "#E5E5E5",
+            ),
+            (
+                "Coste",
+                f"{initial_cost:.3f}\n→ {final_cost:.3f}",
+                "#D5E8D4",
+            ),
+            (
+                "RMSE de posición",
+                f"{initial_rmse:.3f} m\n→ {final_rmse:.3f} m",
+                "#B7D7F0",
+            ),
+            (
+                "Error de cierre",
+                f"{initial_closure:.3f} m\n→ {final_closure:.3f} m",
+                "#E8D7F1",
+            ),
+        ]
+
+        y_positions = [0.815, 0.675, 0.535, 0.395]
+        for (title, value, color), y in zip(cards, y_positions):
+            rectangle = Rectangle(
+                (0.10, y),
+                0.80,
+                0.105,
+                facecolor=color,
+                edgecolor="#666666",
+                linewidth=1.2,
+            )
+            ax.add_patch(rectangle)
+            ax.text(
+                0.15,
+                y + 0.072,
+                title,
+                fontsize=7.8,
+                fontweight="bold",
+                ha="left",
+                va="center",
+            )
+            ax.text(
+                0.85,
+                y + 0.045,
+                value,
+                fontsize=7.3,
+                ha="right",
+                va="center",
+                linespacing=1.35,
+            )
+
+        iteration = state.get("iteration")
+        iteration_text = "—" if iteration is None else str(iteration)
+        accepted = state.get("accepted")
+        if accepted is True:
+            accepted_text = "aceptado"
+        elif accepted is False:
+            accepted_text = "rechazado"
+        else:
+            accepted_text = "—"
+
+        ax.text(
+            0.50,
+            0.315,
+            (
+                f"Iteración: {iteration_text}\n"
+                f"λ: {self._formatear_numero_pose_graph(state.get('damping'), 3)}\n"
+                f"||ΔX||: {self._formatear_numero_pose_graph(state.get('step_norm'), 4)}\n"
+                f"Paso: {accepted_text}"
+            ),
+            fontsize=7.5,
+            ha="center",
+            va="top",
+            linespacing=1.42,
+            bbox={
+                "boxstyle": "round,pad=0.42",
+                "fc": "white",
+                "ec": "#888888",
+                "alpha": 0.97,
+            },
+        )
+
+        ax.text(
+            0.50,
+            0.165,
+            state.get("message", ""),
+            fontsize=7.7,
+            ha="center",
+            va="center",
+            wrap=True,
+            bbox={
+                "boxstyle": "round,pad=0.38",
+                "fc": "white",
+                "ec": "#777777",
+                "alpha": 0.97,
+            },
+        )
+
+        if state.get("show_connections"):
+            ax.text(
+                0.50,
+                0.095,
+                "odometría → prior → loop closure → optimización global",
+                fontsize=6.8,
+                fontweight="bold",
+                ha="center",
+                va="center",
+                color="#333333",
+                wrap=True,
+            )
+
+        ax.text(
+            0.50,
+            0.015,
+            (
+                f"Estado {state.get('step', 1)} de "
+                f"{state.get('total_steps', 1)}"
+            ),
+            fontsize=6.7,
+            ha="center",
+            va="bottom",
+            color="#555555",
+        )
+
+        self._dibujar_leyenda_pose_graph_slam(ax)
+
+    def _dibujar_historial_pose_graph_slam(self, ax, result, state):
+        """Dibuja coste, RMSE y error de cierre a lo largo de las iteraciones."""
+
+        ax.clear()
+        ax.grid(True, alpha=0.22)
+        ax.set_title(
+            "Convergencia: coste, RMSE y error de cierre",
+            fontsize=10.4,
+            fontweight="bold",
+        )
+        ax.set_xlabel("Iteración", fontsize=8)
+
+        history = list(result["optimization"]["history"])
+        cost_values = [float(result["initial_system"]["cost"])]
+        rmse_values = [float(result["initial_metrics"]["position_rmse"])]
+        closure_values = [float(result["initial_closure"]["translation"])]
+
+        for entry in history:
+            cost_values.append(float(entry["cost_after"]))
+            rmse_values.append(float(entry["rmse_after"]))
+            closure_values.append(float(entry["closure_after"]))
+
+        iteration = state.get("iteration")
+        if state.get("show_cost_history"):
+            visible_count = len(cost_values) if iteration is None else min(
+                len(cost_values), int(iteration) + 1
+            )
+        else:
+            visible_count = 1
+
+        x_values = np.arange(visible_count)
+        cost_visible = np.asarray(cost_values[:visible_count], dtype=float)
+        rmse_visible = np.asarray(rmse_values[:visible_count], dtype=float)
+        closure_visible = np.asarray(closure_values[:visible_count], dtype=float)
+
+        # Se normalizan las tres magnitudes para compararlas en un mismo eje.
+        def normalize(values):
+            base = max(float(values[0]), 1e-12)
+            return values / base
+
+        ax.plot(
+            x_values,
+            normalize(cost_visible),
+            marker="o",
+            linewidth=2.2,
+            markersize=4.5,
+            color="#E45756",
+            label="coste / coste inicial",
+        )
+        ax.plot(
+            x_values,
+            normalize(rmse_visible),
+            marker="o",
+            linewidth=2.0,
+            markersize=4.2,
+            color="#4C9ED9",
+            label="RMSE / RMSE inicial",
+        )
+        ax.plot(
+            x_values,
+            normalize(closure_visible),
+            marker="o",
+            linewidth=2.0,
+            markersize=4.2,
+            color="#8E5EA2",
+            label="cierre / cierre inicial",
+        )
+
+        ax.axhline(1.0, color="#999999", linewidth=1.0, linestyle="dotted")
+        ax.set_ylim(bottom=0.0)
+        ax.set_xlim(-0.2, max(len(cost_values) - 0.8, 1.2))
+        ax.legend(loc="upper right", fontsize=7.0, ncol=3, framealpha=0.95)
+
+        ax.text(
+            0.01,
+            0.03,
+            (
+                "Cada valor está dividido por su magnitud inicial. "
+                "Las tres curvas deben descender."
+            ),
+            transform=ax.transAxes,
+            fontsize=6.9,
+            ha="left",
+            va="bottom",
+            color="#444444",
+        )
+
+    def _dibujar_estado_pose_graph_slam(
+        self,
+        info_ax,
+        initial_ax,
+        optimized_ax,
+        history_ax,
+        result,
+        state,
+    ):
+        """Dibuja un estado completo del ejemplo de Pose Graph SLAM."""
+
+        initial = np.asarray(result["initial_trajectory"], dtype=float)
+        current = state.get("current_poses")
+        if current is None:
+            current = initial
+        current = np.asarray(current, dtype=float)
+
+        self._dibujar_info_pose_graph_slam(info_ax, result, state)
+
+        self._dibujar_panel_pose_graph_slam(
+            ax=initial_ax,
+            result=result,
+            trajectory=initial,
+            state=state,
+            panel_kind="initial",
+            title="Antes de optimizar: odometría con deriva",
+        )
+
+        phase = state.get("phase")
+        if phase in {"comparison", "summary"}:
+            optimized_title = "Después de optimizar"
+        elif state.get("show_current") or phase == "optimization":
+            optimized_title = "Optimización: iteración actual"
+        else:
+            optimized_title = "Optimización global"
+
+        self._dibujar_panel_pose_graph_slam(
+            ax=optimized_ax,
+            result=result,
+            trajectory=current,
+            state=state,
+            panel_kind="optimized",
+            title=optimized_title,
+        )
+
+        if not state.get("show_current") and state.get("phase") not in {
+            "optimization",
+            "comparison",
+            "summary",
+        }:
+            optimized_ax.text(
+                0.50,
+                0.50,
+                "La trayectoria optimizada\naparecerá al resolver\nel pose graph",
+                transform=optimized_ax.transAxes,
+                fontsize=11,
+                fontweight="bold",
+                ha="center",
+                va="center",
+                color="#666666",
+                bbox={
+                    "boxstyle": "round,pad=0.55",
+                    "fc": "white",
+                    "ec": "#999999",
+                    "alpha": 0.96,
+                },
+                zorder=80,
+            )
+
+        self._dibujar_historial_pose_graph_slam(history_ax, result, state)
+
+    def animate_pose_graph_slam(
+        self,
+        result,
+        states,
+        title="Pose Graph SLAM 2D",
+        final_image_path=None,
+        repeat=False,
+    ):
+        """
+        Anima la construcción y optimización de un pose graph 2D.
+
+        La imagen final muestra:
+        - trayectoria inicial y trayectoria optimizada en paneles separados;
+        - prior, odometría y cierre de ciclo;
+        - coste, RMSE y error de cierre;
+        - evolución completa de la optimización.
+        """
+
+        if not states:
+            raise ValueError(
+                "La lista de estados de Pose Graph SLAM no puede estar vacía."
+            )
+        if result is None:
+            raise ValueError("El resultado de Pose Graph SLAM no puede ser nulo.")
+
+        required = {
+            "graph",
+            "true_trajectory",
+            "initial_trajectory",
+            "optimized_trajectory",
+            "initial_system",
+            "final_system",
+            "initial_metrics",
+            "final_metrics",
+            "initial_closure",
+            "final_closure",
+            "optimization",
+        }
+        missing = required.difference(result)
+        if missing:
+            raise ValueError(
+                "Faltan datos del resultado: " + ", ".join(sorted(missing))
+            )
+
+        (
+            fig,
+            info_ax,
+            initial_ax,
+            optimized_ax,
+            history_ax,
+        ) = self._preparar_figura_pose_graph_slam(title)
+
+        if final_image_path is not None:
+            self._dibujar_estado_pose_graph_slam(
+                info_ax=info_ax,
+                initial_ax=initial_ax,
+                optimized_ax=optimized_ax,
+                history_ax=history_ax,
+                result=result,
+                state=states[-1],
+            )
+
+            final_image_path = Path(final_image_path)
+            final_image_path.parent.mkdir(parents=True, exist_ok=True)
+            fig.savefig(final_image_path, dpi=200, bbox_inches="tight")
+            print(f"Imagen final guardada en: {final_image_path}")
+
+        def init():
+            self._dibujar_estado_pose_graph_slam(
+                info_ax=info_ax,
+                initial_ax=initial_ax,
+                optimized_ax=optimized_ax,
+                history_ax=history_ax,
+                result=result,
+                state=states[0],
+            )
+            return []
+
+        def update(frame_index):
+            self._dibujar_estado_pose_graph_slam(
+                info_ax=info_ax,
+                initial_ax=initial_ax,
+                optimized_ax=optimized_ax,
+                history_ax=history_ax,
+                result=result,
                 state=states[frame_index],
             )
             return []
