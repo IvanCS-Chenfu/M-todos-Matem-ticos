@@ -33,6 +33,7 @@ class GraphAnimator:
     - landmarks en SLAM con referencias conocidas y variables estimadas,
     - asociación de datos con gating, matching global y RANSAC,
     - funciones robustas con comparación entre mínimos cuadrados e IRLS,
+    - SLAM multi-robot con alineación y fusión de pose graphs,
     - caminos mínimos con Bellman-Ford,
     - caminos mínimos con Floyd-Warshall,
     - árboles de expansión mínima con Prim y Kruskal,
@@ -25908,6 +25909,973 @@ class GraphAnimator:
                 weight_ax=weight_ax,
                 result=result,
                 state=states[frame_index],
+            )
+            return []
+
+        self.animation = FuncAnimation(
+            fig,
+            update,
+            frames=len(states),
+            init_func=init,
+            interval=self.interval,
+            repeat=repeat,
+            blit=False,
+        )
+        plt.show()
+        return self.animation
+
+    # ------------------------------------------------------------------
+    # Elementos específicos de SLAM multi-robot
+    # ------------------------------------------------------------------
+
+    def _preparar_figura_multi_robot_slam(self, title):
+        """Crea la figura comparativa de mapas separados, encuentros y fusión."""
+
+        fig = plt.figure(figsize=self.figsize)
+        grid = fig.add_gridspec(
+            2,
+            4,
+            width_ratios=[1.42, 2.35, 2.35, 2.35],
+            height_ratios=[3.9, 1.62],
+            wspace=0.12,
+            hspace=0.16,
+        )
+        info_ax = fig.add_subplot(grid[:, 0])
+        separated_ax = fig.add_subplot(grid[0, 1])
+        matches_ax = fig.add_subplot(grid[0, 2])
+        fused_ax = fig.add_subplot(grid[0, 3])
+        transform_ax = fig.add_subplot(grid[1, 1])
+        ransac_ax = fig.add_subplot(grid[1, 2])
+        metrics_ax = fig.add_subplot(grid[1, 3])
+        fig.suptitle(title, fontsize=15, fontweight="bold")
+        fig.subplots_adjust(left=0.025, right=0.985, top=0.925, bottom=0.05)
+        return (
+            fig,
+            info_ax,
+            separated_ax,
+            matches_ax,
+            fused_ax,
+            transform_ax,
+            ransac_ax,
+            metrics_ax,
+        )
+
+    @staticmethod
+    def _normalizar_angulo_multi_robot(angulo):
+        """Normaliza un ángulo para interpolaciones visuales."""
+
+        return (float(angulo) + pi) % (2.0 * pi) - pi
+
+    def _interpolar_pose_multi_robot(self, pose_a, pose_b, alpha):
+        """Interpola una pose plana tratando la orientación por el camino corto."""
+
+        pose_a = np.asarray(pose_a, dtype=float)
+        pose_b = np.asarray(pose_b, dtype=float)
+        alpha = float(np.clip(alpha, 0.0, 1.0))
+        salida = (1.0 - alpha) * pose_a + alpha * pose_b
+        diferencia = self._normalizar_angulo_multi_robot(pose_b[2] - pose_a[2])
+        salida[2] = self._normalizar_angulo_multi_robot(
+            pose_a[2] + alpha * diferencia
+        )
+        return salida
+
+    def _transformar_trayectoria_multi_robot(self, trajectory, transform):
+        """Transforma una trayectoria SE(2) sin depender del script principal."""
+
+        trajectory = np.asarray(trajectory, dtype=float)
+        transform = np.asarray(transform, dtype=float)
+        c = cos(float(transform[2]))
+        s = sin(float(transform[2]))
+        rotation = np.array([[c, -s], [s, c]], dtype=float)
+        output = np.empty_like(trajectory, dtype=float)
+        output[:, :2] = (rotation @ trajectory[:, :2].T).T + transform[:2]
+        output[:, 2] = [
+            self._normalizar_angulo_multi_robot(transform[2] + angle)
+            for angle in trajectory[:, 2]
+        ]
+        return output
+
+    def _dibujar_pose_multi_robot(
+        self,
+        ax,
+        pose,
+        color,
+        label=None,
+        alpha=1.0,
+        size=34,
+        zorder=20,
+    ):
+        """Dibuja una pose como punto y flecha de orientación."""
+
+        x, y, theta = np.asarray(pose, dtype=float)
+        ax.scatter(
+            [x],
+            [y],
+            s=size,
+            facecolor=color,
+            edgecolor="white",
+            linewidth=0.8,
+            alpha=alpha,
+            zorder=zorder,
+        )
+        length = 0.34
+        ax.arrow(
+            x,
+            y,
+            length * cos(theta),
+            length * sin(theta),
+            width=0.018,
+            head_width=0.12,
+            head_length=0.12,
+            color=color,
+            alpha=alpha,
+            length_includes_head=True,
+            zorder=zorder + 1,
+        )
+        if label:
+            ax.text(
+                x,
+                y + 0.29,
+                label,
+                fontsize=5.8,
+                fontweight="bold",
+                color=color,
+                ha="center",
+                va="bottom",
+                alpha=alpha,
+                zorder=zorder + 2,
+            )
+
+    def _dibujar_trayectoria_multi_robot(
+        self,
+        ax,
+        trajectory,
+        color,
+        label,
+        count=None,
+        linestyle="solid",
+        linewidth=2.0,
+        alpha=1.0,
+        pose_labels=False,
+        robot_prefix="",
+        zorder=12,
+    ):
+        """Dibuja una trayectoria y sus poses visibles."""
+
+        trajectory = np.asarray(trajectory, dtype=float)
+        if count is None:
+            count = len(trajectory)
+        count = int(np.clip(count, 0, len(trajectory)))
+        if count <= 0:
+            return
+        visible = trajectory[:count]
+        if len(visible) >= 2:
+            ax.plot(
+                visible[:, 0],
+                visible[:, 1],
+                color=color,
+                linewidth=linewidth,
+                linestyle=linestyle,
+                alpha=alpha,
+                label=label,
+                zorder=zorder,
+            )
+        elif label:
+            ax.plot([], [], color=color, label=label, linestyle=linestyle)
+        for index, pose in enumerate(visible):
+            self._dibujar_pose_multi_robot(
+                ax,
+                pose,
+                color,
+                label=(f"{robot_prefix}{index}" if pose_labels else None),
+                alpha=alpha,
+                size=29 if index not in {0, count - 1} else 42,
+                zorder=zorder + 2,
+            )
+
+    def _configurar_eje_multi_robot(self, ax, title, limits):
+        """Aplica un formato común a los tres paneles geométricos."""
+
+        ax.clear()
+        ax.set_title(title, fontsize=10.5, fontweight="bold", pad=8)
+        ax.set_aspect("equal", adjustable="box")
+        ax.grid(True, linewidth=0.45, alpha=0.28)
+        ax.set_xlim(limits[0], limits[1])
+        ax.set_ylim(limits[2], limits[3])
+        ax.tick_params(labelsize=6)
+        ax.set_xlabel("x [m]", fontsize=7)
+        ax.set_ylabel("y [m]", fontsize=7)
+
+    def _limites_multi_robot(self, result):
+        """Calcula límites globales estables para la demostración."""
+
+        arrays = [
+            np.asarray(result["true_trajectory_a_global"], dtype=float)[:, :2],
+            np.asarray(result["true_trajectory_b_global"], dtype=float)[:, :2],
+            np.asarray(result["initial_trajectory_a_global"], dtype=float)[:, :2],
+            np.asarray(result["initial_trajectory_b_aligned"], dtype=float)[:, :2],
+            np.asarray(result["optimized_trajectory_a"], dtype=float)[:, :2],
+            np.asarray(result["optimized_trajectory_b"], dtype=float)[:, :2],
+        ]
+        points = np.vstack(arrays)
+        margin = 0.85
+        return (
+            float(np.min(points[:, 0]) - margin),
+            float(np.max(points[:, 0]) + margin),
+            float(np.min(points[:, 1]) - margin),
+            float(np.max(points[:, 1]) + margin),
+        )
+
+    def _dibujar_marco_multi_robot(self, ax, origin, angle, name, color):
+        """Dibuja los ejes de un sistema de coordenadas local."""
+
+        origin = np.asarray(origin, dtype=float)
+        length = 0.72
+        x_direction = np.array([cos(angle), sin(angle)])
+        y_direction = np.array([-sin(angle), cos(angle)])
+        ax.arrow(
+            origin[0],
+            origin[1],
+            *(length * x_direction),
+            color=color,
+            width=0.012,
+            head_width=0.11,
+            head_length=0.11,
+            length_includes_head=True,
+            zorder=30,
+        )
+        ax.arrow(
+            origin[0],
+            origin[1],
+            *(length * y_direction),
+            color=color,
+            width=0.012,
+            head_width=0.11,
+            head_length=0.11,
+            length_includes_head=True,
+            alpha=0.70,
+            zorder=30,
+        )
+        ax.text(
+            origin[0],
+            origin[1] - 0.25,
+            name,
+            fontsize=7,
+            fontweight="bold",
+            color=color,
+            ha="center",
+            va="top",
+            zorder=31,
+        )
+
+    def _dibujar_panel_mapas_separados(self, ax, result, state):
+        """Dibuja los pose graphs locales antes de conocer su transformación."""
+
+        trajectory_a = np.asarray(result["initial_trajectory_a_local"], dtype=float)
+        trajectory_b = np.asarray(result["initial_trajectory_b_local"], dtype=float)
+        display_b = self._transformar_trayectoria_multi_robot(
+            trajectory_b,
+            np.array([8.5, 0.2, 0.0], dtype=float),
+        )
+        all_points = np.vstack([trajectory_a[:, :2], display_b[:, :2]])
+        limits = (
+            float(np.min(all_points[:, 0]) - 0.8),
+            float(np.max(all_points[:, 0]) + 0.8),
+            float(np.min(all_points[:, 1]) - 0.8),
+            float(np.max(all_points[:, 1]) + 0.8),
+        )
+        self._configurar_eje_multi_robot(
+            ax,
+            "1 · Mapas locales separados",
+            limits,
+        )
+        count_a = int(state.get("show_a_count", 0))
+        count_b = int(state.get("show_b_count", 0))
+        self._dibujar_trayectoria_multi_robot(
+            ax,
+            trajectory_a,
+            "#2F6B9A",
+            "Robot A en W_A",
+            count=count_a,
+            pose_labels=True,
+            robot_prefix="A",
+        )
+        self._dibujar_trayectoria_multi_robot(
+            ax,
+            display_b,
+            "#E1812C",
+            "Robot B en W_B",
+            count=count_b,
+            pose_labels=True,
+            robot_prefix="B",
+        )
+        if count_a:
+            self._dibujar_marco_multi_robot(ax, trajectory_a[0, :2], 0.0, "W_A", "#2F6B9A")
+        if count_b:
+            self._dibujar_marco_multi_robot(ax, display_b[0, :2], 0.0, "W_B", "#E1812C")
+        if count_a == len(trajectory_a) and count_b == len(display_b):
+            ax.text(
+                0.50,
+                0.025,
+                "2 componentes conexas · la posición relativa es desconocida",
+                transform=ax.transAxes,
+                fontsize=6.9,
+                fontweight="bold",
+                ha="center",
+                va="bottom",
+                bbox={
+                    "boxstyle": "round,pad=0.25",
+                    "fc": "white",
+                    "ec": "#777777",
+                    "alpha": 0.94,
+                },
+            )
+        ax.legend(loc="upper left", fontsize=6.2, framealpha=0.93)
+
+    def _dibujar_panel_lugares_comunes(self, ax, result, state):
+        """Dibuja candidatos de lugar y la verificación geométrica de RANSAC."""
+
+        trajectory_a = np.asarray(result["initial_trajectory_a_local"], dtype=float)
+        trajectory_b = np.asarray(result["initial_trajectory_b_local"], dtype=float)
+        display_transform = np.array([8.5, 0.2, 0.0], dtype=float)
+        display_b = self._transformar_trayectoria_multi_robot(
+            trajectory_b,
+            display_transform,
+        )
+        all_points = np.vstack([trajectory_a[:, :2], display_b[:, :2]])
+        limits = (
+            float(np.min(all_points[:, 0]) - 0.8),
+            float(np.max(all_points[:, 0]) + 0.8),
+            float(np.min(all_points[:, 1]) - 0.8),
+            float(np.max(all_points[:, 1]) + 0.8),
+        )
+        self._configurar_eje_multi_robot(
+            ax,
+            "2 · Lugares comunes y RANSAC",
+            limits,
+        )
+        self._dibujar_trayectoria_multi_robot(
+            ax,
+            trajectory_a,
+            "#2F6B9A",
+            "Mapa A",
+            count=len(trajectory_a),
+            alpha=0.82,
+        )
+        self._dibujar_trayectoria_multi_robot(
+            ax,
+            display_b,
+            "#E1812C",
+            "Mapa B",
+            count=len(display_b),
+            alpha=0.82,
+        )
+
+        candidate_count = int(state.get("candidate_count", 0))
+        hypothesis_index = state.get("ransac_hypothesis")
+        hypothesis = None
+        if hypothesis_index is not None:
+            history = result["ransac"]["history"]
+            if 0 <= int(hypothesis_index) < len(history):
+                hypothesis = history[int(hypothesis_index)]
+
+        for index, place in enumerate(result["shared_places"][:candidate_count]):
+            ia = int(place["index_a"])
+            ib = int(place["index_b"])
+            point_a = trajectory_a[ia, :2]
+            point_b = display_b[ib, :2]
+            if state.get("show_ransac_result", False):
+                is_inlier = bool(result["ransac"]["inliers"][index])
+                color = "#2E8B57" if is_inlier else "#C62828"
+                linestyle = "solid" if is_inlier else "dashed"
+                linewidth = 2.8 if is_inlier else 2.2
+            elif hypothesis is not None:
+                is_inlier = bool(hypothesis["inliers"][index])
+                color = "#2E8B57" if is_inlier else "#F28E2B"
+                linestyle = "solid" if is_inlier else "dashed"
+                linewidth = 2.4
+            else:
+                color = "#8E5EA2"
+                linestyle = "dashed"
+                linewidth = 1.7
+            ax.plot(
+                [point_a[0], point_b[0]],
+                [point_a[1], point_b[1]],
+                color=color,
+                linestyle=linestyle,
+                linewidth=linewidth,
+                alpha=0.88,
+                zorder=25,
+            )
+            middle = 0.5 * (point_a + point_b)
+            ax.text(
+                middle[0],
+                middle[1] + 0.15,
+                place["name"],
+                fontsize=6.0,
+                fontweight="bold",
+                color=color,
+                ha="center",
+                va="bottom",
+                bbox={"boxstyle": "round,pad=0.15", "fc": "white", "ec": color, "alpha": 0.9},
+                zorder=27,
+            )
+
+        if hypothesis is not None:
+            sample = ", ".join(
+                result["shared_places"][index]["name"]
+                for index in hypothesis["sample"]
+            )
+            ax.text(
+                0.50,
+                0.025,
+                f"Hipótesis {hypothesis['hypothesis'] + 1}: muestra {sample} · inliers {hypothesis['inlier_count']}",
+                transform=ax.transAxes,
+                fontsize=6.7,
+                fontweight="bold",
+                ha="center",
+                va="bottom",
+                bbox={"boxstyle": "round,pad=0.25", "fc": "white", "ec": "#777777", "alpha": 0.94},
+            )
+        elif state.get("show_ransac_result", False):
+            ax.text(
+                0.50,
+                0.025,
+                f"RANSAC: {result['ransac']['inlier_count']} inliers · {result['ransac']['outlier_count']} outlier",
+                transform=ax.transAxes,
+                fontsize=6.8,
+                fontweight="bold",
+                ha="center",
+                va="bottom",
+                bbox={"boxstyle": "round,pad=0.25", "fc": "white", "ec": "#2E8B57", "alpha": 0.94},
+            )
+        ax.legend(loc="upper left", fontsize=6.2, framealpha=0.93)
+
+    def _dibujar_panel_mapa_fusionado(self, ax, result, state):
+        """Dibuja la alineación inicial y la optimización conjunta."""
+
+        limits = self._limites_multi_robot(result)
+        self._configurar_eje_multi_robot(
+            ax,
+            "3 · Mapas alineados y optimizados",
+            limits,
+        )
+        true_a = np.asarray(result["true_trajectory_a_global"], dtype=float)
+        true_b = np.asarray(result["true_trajectory_b_global"], dtype=float)
+        ax.plot(
+            true_a[:, 0],
+            true_a[:, 1],
+            color="#222222",
+            linewidth=1.2,
+            linestyle="dotted",
+            alpha=0.62,
+            label="Trayectorias reales",
+            zorder=5,
+        )
+        ax.plot(
+            true_b[:, 0],
+            true_b[:, 1],
+            color="#222222",
+            linewidth=1.2,
+            linestyle="dotted",
+            alpha=0.62,
+            zorder=5,
+        )
+
+        trajectory_a = state.get("trajectory_a")
+        trajectory_b = state.get("trajectory_b")
+        if trajectory_a is None:
+            trajectory_a = np.asarray(result["initial_trajectory_a_global"], dtype=float)
+        else:
+            trajectory_a = np.asarray(trajectory_a, dtype=float)
+        if trajectory_b is None:
+            local_b = np.asarray(result["initial_trajectory_b_local"], dtype=float)
+            display_transform = np.array([8.5, 0.2, 0.0], dtype=float)
+            estimated_transform = np.asarray(result["transform_a_b_initial"], dtype=float)
+            alpha = float(state.get("alignment_alpha", 0.0))
+            current_transform = self._interpolar_pose_multi_robot(
+                display_transform,
+                estimated_transform,
+                alpha,
+            )
+            trajectory_b = self._transformar_trayectoria_multi_robot(
+                local_b,
+                current_transform,
+            )
+        else:
+            trajectory_b = np.asarray(trajectory_b, dtype=float)
+
+        self._dibujar_trayectoria_multi_robot(
+            ax,
+            trajectory_a,
+            "#2F6B9A",
+            "Robot A",
+            count=len(trajectory_a),
+            linewidth=2.4,
+            pose_labels=bool(state.get("show_summary", False)),
+            robot_prefix="A",
+        )
+        self._dibujar_trayectoria_multi_robot(
+            ax,
+            trajectory_b,
+            "#E1812C",
+            "Robot B",
+            count=len(trajectory_b),
+            linewidth=2.4,
+            pose_labels=bool(state.get("show_summary", False)),
+            robot_prefix="B",
+        )
+
+        inter_count = int(state.get("inter_count", 0))
+        for specification in result["inter_robot_measurements"][:inter_count]:
+            ia = int(str(specification["node_i"]).split("x")[-1])
+            ib = int(str(specification["node_j"]).split("x")[-1])
+            point_a = trajectory_a[ia, :2]
+            point_b = trajectory_b[ib, :2]
+            ax.plot(
+                [point_a[0], point_b[0]],
+                [point_a[1], point_b[1]],
+                color="#8E5EA2",
+                linewidth=2.6,
+                linestyle="dashdot",
+                alpha=0.92,
+                zorder=28,
+            )
+            ax.scatter(
+                [point_a[0], point_b[0]],
+                [point_a[1], point_b[1]],
+                s=55,
+                facecolor="#B7E4C7",
+                edgecolor="#2E8B57",
+                linewidth=1.0,
+                zorder=29,
+            )
+
+        if state.get("show_summary", False):
+            false_place = next(
+                place for place in result["shared_places"] if not place["is_true"]
+            )
+            ia = int(false_place["index_a"])
+            ib = int(false_place["index_b"])
+            ax.plot(
+                [trajectory_a[ia, 0], trajectory_b[ib, 0]],
+                [trajectory_a[ia, 1], trajectory_b[ib, 1]],
+                color="#C62828",
+                linewidth=2.0,
+                linestyle="dashed",
+                alpha=0.72,
+                zorder=21,
+            )
+            ax.text(
+                0.98,
+                0.03,
+                "alias c3 rechazado",
+                transform=ax.transAxes,
+                fontsize=6.3,
+                fontweight="bold",
+                color="#C62828",
+                ha="right",
+                va="bottom",
+            )
+
+        ax.legend(loc="upper left", fontsize=6.1, framealpha=0.93)
+        ax.text(
+            0.50,
+            0.025,
+            "El robot B no se desplaza físicamente: cambia el marco en el que se representa su mapa.",
+            transform=ax.transAxes,
+            fontsize=6.45,
+            fontweight="bold",
+            ha="center",
+            va="bottom",
+            bbox={"boxstyle": "round,pad=0.23", "fc": "white", "ec": "#777777", "alpha": 0.94},
+        )
+
+    def _dibujar_info_multi_robot(self, ax, result, state):
+        """Dibuja la explicación textual y las magnitudes del estado actual."""
+
+        ax.clear()
+        ax.axis("off")
+        ax.set_xlim(0, 1)
+        ax.set_ylim(0, 1)
+        ax.text(
+            0.50,
+            0.985,
+            "SLAM multi-robot",
+            fontsize=13,
+            fontweight="bold",
+            ha="center",
+            va="top",
+        )
+        ax.text(
+            0.50,
+            0.946,
+            "Dos grafos locales → un mapa común",
+            fontsize=8.0,
+            ha="center",
+            va="top",
+            color="#444444",
+        )
+        ax.text(
+            0.06,
+            0.885,
+            (
+                "Transformación entre mapas\n"
+                "T_A_B : W_B → W_A\n\n"
+                "Restricción inter-robot\n"
+                "A_xi  ↔  B_xj\n\n"
+                "G = G_A ∪ G_B ∪ E_AB"
+            ),
+            fontsize=7.5,
+            ha="left",
+            va="top",
+            linespacing=1.35,
+            bbox={"boxstyle": "round,pad=0.38", "fc": "white", "ec": "#777777", "alpha": 0.97},
+        )
+        phase = str(state.get("phase", ""))
+        step = int(state.get("step", 0))
+        total = int(state.get("total_steps", 0))
+        ax.text(
+            0.06,
+            0.690,
+            f"Paso {step}/{total}\nFase: {phase}",
+            fontsize=7.3,
+            fontweight="bold",
+            ha="left",
+            va="top",
+        )
+        message = str(state.get("message", ""))
+        words = message.split()
+        lines = []
+        current = ""
+        for word in words:
+            candidate = (current + " " + word).strip()
+            if len(candidate) > 31 and current:
+                lines.append(current)
+                current = word
+            else:
+                current = candidate
+        if current:
+            lines.append(current)
+        ax.text(
+            0.06,
+            0.620,
+            "\n".join(lines),
+            fontsize=7.25,
+            ha="left",
+            va="top",
+            linespacing=1.35,
+            bbox={"boxstyle": "round,pad=0.34", "fc": "#F7F7F7", "ec": "#AAAAAA", "alpha": 0.97},
+        )
+        values = [
+            "robots: 2",
+            f"poses: {len(result['true_trajectory_a_global']) + len(result['true_trajectory_b_global'])}",
+            f"candidatos: {len(result['shared_places'])}",
+            f"inliers RANSAC: {result['ransac']['inlier_count']}",
+            f"outliers: {result['ransac']['outlier_count']}",
+            f"componentes: {result['components_before']} → {result['components_after']}",
+        ]
+        if state.get("iteration") is not None:
+            values.append(f"iteración LM: {state['iteration']}")
+        if state.get("cost") is not None:
+            values.append(f"coste: {float(state['cost']):.5g}")
+        if state.get("rmse") is not None:
+            values.append(f"RMSE: {float(state['rmse']):.4f} m")
+        if state.get("transform_error") is not None:
+            values.append(f"error T_A_B: {float(state['transform_error']):.4f} m")
+        ax.text(
+            0.06,
+            0.425,
+            "\n".join(values),
+            fontsize=7.15,
+            ha="left",
+            va="top",
+            linespacing=1.34,
+            bbox={"boxstyle": "round,pad=0.34", "fc": "white", "ec": "#999999", "alpha": 0.97},
+        )
+        if state.get("show_summary", False):
+            ax.text(
+                0.06,
+                0.205,
+                (
+                    "Resultado final\n"
+                    f"RMSE: {result['initial_metrics']['position_rmse']:.4f} → "
+                    f"{result['final_metrics']['position_rmse']:.4f} m\n"
+                    f"error T: {result['transform_error_initial']['translation']:.4f} → "
+                    f"{result['transform_error_final']['translation']:.4f} m\n"
+                    f"error angular T: {result['transform_error_initial']['angle_deg']:.3f}° → "
+                    f"{result['transform_error_final']['angle_deg']:.3f}°"
+                ),
+                fontsize=7.15,
+                fontweight="bold",
+                ha="left",
+                va="top",
+                linespacing=1.35,
+                bbox={"boxstyle": "round,pad=0.38", "fc": "#EDF7EF", "ec": "#2E8B57", "alpha": 0.98},
+            )
+        ax.text(
+            0.50,
+            0.022,
+            "Las restricciones inter-robot conectan sistemas de coordenadas.",
+            fontsize=6.5,
+            fontweight="bold",
+            ha="center",
+            va="bottom",
+            color="#5A316B",
+        )
+
+    def _dibujar_transformacion_multi_robot(self, ax, result, state):
+        """Muestra las transformaciones real, inicial y final."""
+
+        ax.clear()
+        ax.axis("off")
+        ax.set_xlim(0, 1)
+        ax.set_ylim(0, 1)
+        ax.text(0.02, 0.95, "Transformación entre mapas", fontsize=10.2, fontweight="bold", ha="left", va="top")
+        true_t = np.asarray(result["transform_a_b_true"], dtype=float)
+        initial_t = np.asarray(result["transform_a_b_initial"], dtype=float)
+        final_t = np.asarray(result["transform_a_b_final"], dtype=float)
+        rows = [
+            ("Real", true_t, "#222222"),
+            ("RANSAC", initial_t, "#8E5EA2"),
+            ("Optimizada", final_t, "#2E8B57"),
+        ]
+        y = 0.74
+        for label, pose, color in rows:
+            ax.add_patch(
+                Rectangle((0.04, y - 0.10), 0.92, 0.16, facecolor="white", edgecolor=color, linewidth=1.4)
+            )
+            ax.text(0.08, y, label, fontsize=7.2, fontweight="bold", color=color, ha="left", va="center")
+            ax.text(
+                0.94,
+                y,
+                f"x={pose[0]:.3f}  y={pose[1]:.3f}  θ={degrees(pose[2]):.2f}°",
+                fontsize=6.7,
+                ha="right",
+                va="center",
+            )
+            y -= 0.21
+        ax.text(
+            0.04,
+            0.08,
+            (
+                f"Error inicial: {result['transform_error_initial']['translation']:.4f} m · "
+                f"{result['transform_error_initial']['angle_deg']:.3f}°\n"
+                f"Error final:   {result['transform_error_final']['translation']:.4f} m · "
+                f"{result['transform_error_final']['angle_deg']:.3f}°"
+            ),
+            fontsize=6.8,
+            fontweight="bold",
+            ha="left",
+            va="bottom",
+            linespacing=1.35,
+        )
+
+    def _dibujar_ransac_multi_robot(self, ax, result, state):
+        """Dibuja la tabla compacta de correspondencias inter-robot."""
+
+        ax.clear()
+        ax.axis("off")
+        ax.set_xlim(0, 1)
+        ax.set_ylim(0, 1)
+        ax.text(0.02, 0.95, "Verificación de lugares comunes", fontsize=10.2, fontweight="bold", ha="left", va="top")
+        headers = ["par", "desc.", "error", "estado"]
+        xs = [0.08, 0.43, 0.67, 0.90]
+        for x, header in zip(xs, headers):
+            ax.text(x, 0.78, header, fontsize=6.6, fontweight="bold", ha="center", va="center")
+        hypothesis_index = state.get("ransac_hypothesis")
+        current_sample = set()
+        if hypothesis_index is not None:
+            current_sample = set(result["ransac"]["history"][int(hypothesis_index)]["sample"])
+        y = 0.62
+        for index, place in enumerate(result["shared_places"]):
+            inlier = bool(result["ransac"]["inliers"][index])
+            color = "#2E8B57" if inlier else "#C62828"
+            face = "#FFF4CE" if index in current_sample else "white"
+            ax.add_patch(Rectangle((0.03, y - 0.075), 0.94, 0.14, facecolor=face, edgecolor=color, linewidth=1.2))
+            ax.text(xs[0], y, f"{place['pose_a']}↔{place['pose_b']}", fontsize=6.3, ha="center", va="center")
+            ax.text(xs[1], y, f"{place['descriptor_distance']:.3f}", fontsize=6.3, ha="center", va="center")
+            ax.text(xs[2], y, f"{result['ransac']['errors'][index]:.3f} m", fontsize=6.3, ha="center", va="center")
+            ax.text(xs[3], y, "inlier" if inlier else "outlier", fontsize=6.3, fontweight="bold", color=color, ha="center", va="center")
+            y -= 0.16
+        ax.text(
+            0.04,
+            0.025,
+            f"RMSE inliers: {result['ransac']['rmse']:.4f} m · umbral: {result['ransac']['threshold']:.2f} m",
+            fontsize=6.5,
+            fontweight="bold",
+            ha="left",
+            va="bottom",
+        )
+
+    def _dibujar_metricas_multi_robot(self, ax, result, state):
+        """Dibuja conectividad, convergencia y análisis del falso encuentro."""
+
+        ax.clear()
+        ax.axis("off")
+        ax.set_xlim(0, 1)
+        ax.set_ylim(0, 1)
+        ax.text(0.02, 0.95, "Fusión y optimización", fontsize=10.2, fontweight="bold", ha="left", va="top")
+        initial = result["initial_metrics"]
+        final = result["final_metrics"]
+        false = result["false_constraint_analysis"]
+        text = (
+            f"componentes: {result['components_before']} → {result['components_after']}\n"
+            f"factores inter-robot: {len(result['inter_robot_measurements'])}\n"
+            f"iteraciones LM: {result['optimization']['iterations']}\n"
+            f"coste final: {result['optimization']['final_system']['cost']:.5f}\n\n"
+            f"RMSE global: {initial['position_rmse']:.4f} → {final['position_rmse']:.4f} m\n"
+            f"RMSE A: {initial['position_rmse_a']:.4f} → {final['position_rmse_a']:.4f} m\n"
+            f"RMSE B: {initial['position_rmse_b']:.4f} → {final['position_rmse_b']:.4f} m\n\n"
+            f"Alias rechazado c3\n"
+            f"Mahalanobis: {false['mahalanobis']:.2f}\n"
+            f"peso Huber hipotético: {false['huber_weight']:.5f}"
+        )
+        ax.text(
+            0.05,
+            0.80,
+            text,
+            fontsize=6.9,
+            ha="left",
+            va="top",
+            linespacing=1.32,
+            bbox={"boxstyle": "round,pad=0.38", "fc": "white", "ec": "#888888", "alpha": 0.97},
+        )
+        if result["optimization"]["history"]:
+            costs = [entry["cost_after"] for entry in result["optimization"]["history"]]
+            rmses = [entry["metrics_after"]["position_rmse"] for entry in result["optimization"]["history"]]
+            inset = ax.inset_axes([0.55, 0.12, 0.41, 0.34])
+            inset.plot(range(1, len(costs) + 1), costs, marker="o", linewidth=1.4, label="coste")
+            inset.set_title("Convergencia", fontsize=6.4)
+            inset.set_xlabel("iteración", fontsize=5.5)
+            inset.tick_params(labelsize=5)
+            inset.grid(True, alpha=0.25)
+            twin = inset.twinx()
+            twin.plot(range(1, len(rmses) + 1), rmses, marker="s", linewidth=1.1, linestyle="dashed", label="RMSE")
+            twin.tick_params(labelsize=5)
+
+    def _dibujar_estado_multi_robot_slam(
+        self,
+        info_ax,
+        separated_ax,
+        matches_ax,
+        fused_ax,
+        transform_ax,
+        ransac_ax,
+        metrics_ax,
+        result,
+        state,
+    ):
+        """Dibuja un estado completo del apartado de SLAM multi-robot."""
+
+        self._dibujar_info_multi_robot(info_ax, result, state)
+        self._dibujar_panel_mapas_separados(separated_ax, result, state)
+        self._dibujar_panel_lugares_comunes(matches_ax, result, state)
+        self._dibujar_panel_mapa_fusionado(fused_ax, result, state)
+        self._dibujar_transformacion_multi_robot(transform_ax, result, state)
+        self._dibujar_ransac_multi_robot(ransac_ax, result, state)
+        self._dibujar_metricas_multi_robot(metrics_ax, result, state)
+
+    def animate_multi_robot_slam(
+        self,
+        result,
+        states,
+        title="SLAM multi-robot: mapas separados, encuentros y fusión",
+        final_image_path=None,
+        repeat=False,
+    ):
+        """
+        Anima la creación de dos mapas locales y su fusión.
+
+        La imagen final muestra:
+        - los mapas separados en W_A y W_B;
+        - los candidatos e inliers de RANSAC;
+        - la transformación entre marcos;
+        - las restricciones inter-robot;
+        - el mapa global optimizado.
+        """
+
+        if not states:
+            raise ValueError("La lista de estados multi-robot no puede estar vacía.")
+        if result is None:
+            raise ValueError("El resultado multi-robot no puede ser nulo.")
+        required = {
+            "true_trajectory_a_global",
+            "true_trajectory_b_global",
+            "initial_trajectory_a_local",
+            "initial_trajectory_b_local",
+            "initial_trajectory_a_global",
+            "initial_trajectory_b_aligned",
+            "optimized_trajectory_a",
+            "optimized_trajectory_b",
+            "transform_a_b_true",
+            "transform_a_b_initial",
+            "transform_a_b_final",
+            "shared_places",
+            "ransac",
+            "inter_robot_measurements",
+            "optimization",
+            "initial_metrics",
+            "final_metrics",
+            "false_constraint_analysis",
+        }
+        missing = required.difference(result)
+        if missing:
+            raise ValueError("Faltan datos multi-robot: " + ", ".join(sorted(missing)))
+
+        (
+            fig,
+            info_ax,
+            separated_ax,
+            matches_ax,
+            fused_ax,
+            transform_ax,
+            ransac_ax,
+            metrics_ax,
+        ) = self._preparar_figura_multi_robot_slam(title)
+
+        if final_image_path is not None:
+            self._dibujar_estado_multi_robot_slam(
+                info_ax,
+                separated_ax,
+                matches_ax,
+                fused_ax,
+                transform_ax,
+                ransac_ax,
+                metrics_ax,
+                result,
+                states[-1],
+            )
+            final_image_path = Path(final_image_path)
+            final_image_path.parent.mkdir(parents=True, exist_ok=True)
+            fig.savefig(final_image_path, dpi=200, bbox_inches="tight")
+            print(f"Imagen final guardada en: {final_image_path}")
+
+        def init():
+            self._dibujar_estado_multi_robot_slam(
+                info_ax,
+                separated_ax,
+                matches_ax,
+                fused_ax,
+                transform_ax,
+                ransac_ax,
+                metrics_ax,
+                result,
+                states[0],
+            )
+            return []
+
+        def update(frame_index):
+            self._dibujar_estado_multi_robot_slam(
+                info_ax,
+                separated_ax,
+                matches_ax,
+                fused_ax,
+                transform_ax,
+                ransac_ax,
+                metrics_ax,
+                result,
+                states[frame_index],
             )
             return []
 
