@@ -22695,3 +22695,1202 @@ class GraphAnimator:
         )
         plt.show()
         return self.animation
+    # ------------------------------------------------------------------
+    # Error de observación pose-landmark
+    # ------------------------------------------------------------------
+
+    def _preparar_figura_error_pose_landmark(self, title):
+        """Crea paneles para geometría global, marco local y valores."""
+
+        fig = plt.figure(figsize=self.figsize)
+        grid = fig.add_gridspec(
+            2,
+            3,
+            width_ratios=[1.65, 3.80, 3.15],
+            height_ratios=[4.75, 2.05],
+            wspace=0.10,
+            hspace=0.13,
+        )
+        info_ax = fig.add_subplot(grid[:, 0])
+        global_ax = fig.add_subplot(grid[0, 1])
+        local_ax = fig.add_subplot(grid[0, 2])
+        metrics_ax = fig.add_subplot(grid[1, 1:])
+
+        fig.suptitle(title, fontsize=16, fontweight="bold")
+        fig.subplots_adjust(
+            left=0.025,
+            right=0.985,
+            top=0.925,
+            bottom=0.045,
+        )
+        return fig, info_ax, global_ax, local_ax, metrics_ax
+
+    @staticmethod
+    def _titulo_fase_error_pose_landmark(phase):
+        """Traduce las fases internas a títulos didácticos."""
+
+        titles = {
+            "introduction": "1. Factor pose-landmark",
+            "true_geometry": "2. Geometría real",
+            "measurement": "3. Medición fija",
+            "estimated_state": "4. Estado estimado",
+            "prediction": "5. Predicción del modelo",
+            "range_error": "6. Error de distancia",
+            "bearing_error": "7. Error angular",
+            "residual": "8. Vector de residuo",
+            "angle_wrap": "9. Normalización angular",
+            "uncertainty": "10. Incertidumbre",
+            "mahalanobis": "11. Mahalanobis y coste",
+            "jacobians": "12. Jacobianos",
+            "sensitivity": "13. Sensibilidad geométrica",
+            "observability": "14. Observabilidad local",
+            "landmark_correction": "15. Corrección del landmark",
+            "optimized": "16. Observación compatible",
+            "calibration_correct": "17. Calibración correcta",
+            "calibration_wrong": "18. Error de calibración",
+            "summary": "19. Resumen final",
+        }
+        return titles.get(phase, str(phase))
+
+    @staticmethod
+    def _formatear_pose_error_pose_landmark(pose):
+        """Formatea una pose 2D para tarjetas."""
+
+        pose = np.asarray(pose, dtype=float)
+        return (
+            f"({pose[0]:.3f}, {pose[1]:.3f}, "
+            f"{degrees(pose[2]):.2f}°)"
+        )
+
+    @staticmethod
+    def _formatear_landmark_error_pose_landmark(landmark):
+        """Formatea una posición de landmark."""
+
+        landmark = np.asarray(landmark, dtype=float)
+        return f"({landmark[0]:.3f}, {landmark[1]:.3f})"
+
+    @staticmethod
+    def _dibujar_pose_error_pose_landmark(
+        ax,
+        pose,
+        color,
+        edge_color,
+        label,
+        alpha=1.0,
+        line_style="solid",
+        zorder=20,
+    ):
+        """Dibuja una pose como círculo y flecha orientada."""
+
+        pose = np.asarray(pose, dtype=float)
+        x, y, theta = pose
+        length = 0.50
+        ax.scatter(
+            [x],
+            [y],
+            s=115,
+            facecolor=color,
+            edgecolor=edge_color,
+            linewidth=1.7,
+            alpha=alpha,
+            zorder=zorder,
+        )
+        ax.add_patch(
+            FancyArrowPatch(
+                (x, y),
+                (x + length * cos(theta), y + length * sin(theta)),
+                arrowstyle="-|>",
+                mutation_scale=13,
+                linewidth=2.2,
+                linestyle=line_style,
+                color=edge_color,
+                alpha=alpha,
+                zorder=zorder + 1,
+            )
+        )
+        ax.text(
+            x,
+            y - 0.30,
+            label,
+            fontsize=7.2,
+            fontweight="bold",
+            ha="center",
+            va="top",
+            color=edge_color,
+            alpha=alpha,
+            zorder=zorder + 2,
+        )
+
+    @staticmethod
+    def _dibujar_sensor_error_pose_landmark(
+        ax,
+        sensor_pose,
+        color,
+        label,
+        alpha=1.0,
+        zorder=24,
+    ):
+        """Dibuja el marco del sensor mediante un cuadrado y dos ejes."""
+
+        sensor_pose = np.asarray(sensor_pose, dtype=float)
+        x, y, theta = sensor_pose
+        ax.scatter(
+            [x],
+            [y],
+            marker="s",
+            s=52,
+            facecolor="white",
+            edgecolor=color,
+            linewidth=1.6,
+            alpha=alpha,
+            zorder=zorder,
+        )
+        axis_length = 0.28
+        ax.plot(
+            [x, x + axis_length * cos(theta)],
+            [y, y + axis_length * sin(theta)],
+            color=color,
+            linewidth=1.8,
+            alpha=alpha,
+            zorder=zorder + 1,
+        )
+        ax.plot(
+            [x, x - axis_length * sin(theta)],
+            [y, y + axis_length * cos(theta)],
+            color=color,
+            linewidth=1.2,
+            alpha=0.72 * alpha,
+            zorder=zorder + 1,
+        )
+        ax.text(
+            x + 0.08,
+            y + 0.16,
+            label,
+            fontsize=6.5,
+            fontweight="bold",
+            color=color,
+            alpha=alpha,
+            zorder=zorder + 2,
+        )
+
+    def _dibujar_leyenda_error_pose_landmark(self, ax):
+        """Dibuja una leyenda compacta y estable."""
+
+        elements = [
+            Line2D(
+                [0], [0], marker="o", color="none",
+                markerfacecolor="#4C9ED9", markeredgecolor="#1F4F73",
+                markersize=8, label="Pose estimada",
+            ),
+            Line2D(
+                [0], [0], marker="D", color="none",
+                markerfacecolor="#F28E2B", markeredgecolor="#8A4B08",
+                markersize=8, label="Landmark estimado",
+            ),
+            Line2D(
+                [0], [0], color="#2E8B57", linewidth=2.6,
+                linestyle="dashed", label="Medición fija",
+            ),
+            Line2D(
+                [0], [0], color="#8E5EA2", linewidth=2.8,
+                label="Predicción",
+            ),
+            Line2D(
+                [0], [0], color="#C62828", linewidth=2.8,
+                label="Error",
+            ),
+            Line2D(
+                [0], [0], color="#777777", linewidth=1.7,
+                linestyle="dashed", label="Valor real / inicial",
+            ),
+        ]
+        ax.legend(
+            handles=elements,
+            loc="lower center",
+            bbox_to_anchor=(0.5, 0.025),
+            fontsize=6.6,
+            framealpha=0.97,
+            ncol=1,
+            handlelength=2.4,
+            labelspacing=0.55,
+        )
+
+    def _dibujar_info_error_pose_landmark(self, ax, result, state):
+        """Dibuja fase, mensaje y flujo conceptual del factor."""
+
+        ax.clear()
+        ax.axis("off")
+        ax.set_xlim(0, 1)
+        ax.set_ylim(0, 1)
+
+        ax.text(
+            0.50,
+            0.985,
+            self._titulo_fase_error_pose_landmark(state.get("phase")),
+            fontsize=11.2,
+            fontweight="bold",
+            ha="center",
+            va="top",
+        )
+        ax.text(
+            0.50,
+            0.943,
+            f"Estado {state.get('step', 0)} de {state.get('total_steps', 0)}",
+            fontsize=7.3,
+            color="#555555",
+            ha="center",
+            va="top",
+        )
+        ax.text(
+            0.50,
+            0.835,
+            state.get("message", ""),
+            fontsize=8.0,
+            fontweight="bold",
+            ha="center",
+            va="top",
+            wrap=True,
+            linespacing=1.42,
+            bbox={
+                "boxstyle": "round,pad=0.45",
+                "fc": "white",
+                "ec": "#777777",
+                "alpha": 0.98,
+            },
+        )
+
+        # Esquema mínimo del factor.
+        ax.scatter(
+            [0.20], [0.665], s=220,
+            facecolor="#B7D7F0", edgecolor="#1F4F73", linewidth=1.7,
+        )
+        ax.scatter(
+            [0.80], [0.665], s=205, marker="D",
+            facecolor="#FBE5A6", edgecolor="#8A4B08", linewidth=1.7,
+        )
+        ax.plot(
+            [0.28, 0.72], [0.665, 0.665],
+            color="#2E8B57", linewidth=3.0,
+        )
+        ax.text(0.20, 0.665, "x0", fontsize=8.4, fontweight="bold", ha="center", va="center")
+        ax.text(0.80, 0.665, "l0", fontsize=8.4, fontweight="bold", ha="center", va="center")
+        ax.text(0.50, 0.700, "z=(r, β)", fontsize=7.0, fontweight="bold", ha="center", color="#245B3A")
+
+        measurement = result["measurement"]
+        evaluation = state["evaluation"]
+        fixed_box = Rectangle(
+            (0.08, 0.500), 0.84, 0.105,
+            facecolor="#D5E8D4", edgecolor="#2E8B57", linewidth=1.5,
+        )
+        ax.add_patch(fixed_box)
+        ax.text(
+            0.50, 0.553,
+            (
+                "MEDICIÓN FIJA\n"
+                f"r={measurement[0]:.3f} m · β={degrees(measurement[1]):.3f}°"
+            ),
+            fontsize=7.1,
+            fontweight="bold",
+            color="#245B3A",
+            ha="center",
+            va="center",
+        )
+
+        prediction = evaluation["prediction"]
+        dynamic_box = Rectangle(
+            (0.08, 0.360), 0.84, 0.105,
+            facecolor="#E8D7F1", edgecolor="#8E5EA2", linewidth=1.5,
+        )
+        ax.add_patch(dynamic_box)
+        ax.text(
+            0.50, 0.413,
+            (
+                "PREDICCIÓN h(x0,l0)\n"
+                f"r̂={prediction[0]:.3f} m · β̂={degrees(prediction[1]):.3f}°"
+            ),
+            fontsize=7.1,
+            fontweight="bold",
+            color="#5A316B",
+            ha="center",
+            va="center",
+        )
+
+        label = state.get("experiment_label")
+        if label:
+            ax.text(
+                0.50,
+                0.303,
+                label,
+                fontsize=7.2,
+                fontweight="bold",
+                ha="center",
+                va="center",
+                color="#8A4B08",
+                bbox={
+                    "boxstyle": "round,pad=0.25",
+                    "fc": "#FBE5A6",
+                    "ec": "#8A6D1D",
+                },
+            )
+
+        if state.get("show_wrap", False):
+            wrap = result["angle_wrap"]
+            ax.text(
+                0.50,
+                0.225,
+                (
+                    f"{degrees(wrap['predicted_bearing']):.0f}° - "
+                    f"({degrees(wrap['measured_bearing']):.0f}°)\n"
+                    f"= {degrees(wrap['raw_error']):.0f}° → "
+                    f"wrap = {degrees(wrap['normalized_error']):.0f}°"
+                ),
+                fontsize=7.4,
+                family="monospace",
+                fontweight="bold",
+                color="#7A1D1D",
+                ha="center",
+                va="center",
+                bbox={
+                    "boxstyle": "round,pad=0.33",
+                    "fc": "#F7C6C7",
+                    "ec": "#C62828",
+                },
+            )
+        elif state.get("show_calibration", False):
+            ext = state["sensor_extrinsic"]
+            ax.text(
+                0.50,
+                0.225,
+                (
+                    "T_RS usada\n"
+                    f"({ext[0]:.2f} m, {ext[1]:.2f} m, {degrees(ext[2]):.1f}°)"
+                ),
+                fontsize=7.2,
+                family="monospace",
+                ha="center",
+                va="center",
+                color="#7A1D1D" if state.get("phase") == "calibration_wrong" else "#245B3A",
+            )
+        else:
+            ax.text(
+                0.50,
+                0.225,
+                "e = h(x0,l0) - z\nF = 1/2 · eᵀΩe",
+                fontsize=7.5,
+                family="monospace",
+                ha="center",
+                va="center",
+                color="#333333",
+                linespacing=1.45,
+            )
+
+        self._dibujar_leyenda_error_pose_landmark(ax)
+
+    def _dibujar_geometria_global_error_pose_landmark(self, ax, result, state):
+        """Dibuja pose, sensor, landmark y rayos en el marco global."""
+
+        ax.clear()
+        ax.set_aspect("equal", adjustable="box")
+        ax.set_xlim(0.15, 5.70)
+        ax.set_ylim(0.15, 5.15)
+        ax.grid(True, linewidth=0.55, alpha=0.22)
+        ax.set_xlabel("x global [m]", fontsize=8)
+        ax.set_ylabel("y global [m]", fontsize=8)
+        ax.tick_params(labelsize=7)
+        ax.set_title("Geometría global", fontsize=11.0, fontweight="bold")
+
+        evaluation = state["evaluation"]
+        pose = state["pose"]
+        landmark = state["landmark"]
+        sensor = evaluation["sensor_pose"]
+
+        if state.get("show_true", False):
+            self._dibujar_pose_error_pose_landmark(
+                ax,
+                result["true_pose"],
+                "white",
+                "#777777",
+                "pose real",
+                alpha=0.72,
+                line_style="dashed",
+                zorder=11,
+            )
+            ax.scatter(
+                [result["true_landmark"][0]],
+                [result["true_landmark"][1]],
+                s=135,
+                marker="x",
+                color="#555555",
+                linewidth=2.0,
+                alpha=0.75,
+                zorder=12,
+            )
+            ax.text(
+                result["true_landmark"][0] + 0.08,
+                result["true_landmark"][1] + 0.16,
+                "landmark real",
+                fontsize=6.8,
+                color="#555555",
+                zorder=13,
+            )
+
+        if state.get("show_initial_history", False):
+            initial_landmark = result["initial_landmark"]
+            if np.linalg.norm(landmark - initial_landmark) > 1e-8:
+                ax.scatter(
+                    [initial_landmark[0]],
+                    [initial_landmark[1]],
+                    s=80,
+                    marker="D",
+                    facecolor="white",
+                    edgecolor="#8A4B08",
+                    linewidth=1.3,
+                    alpha=0.55,
+                    zorder=13,
+                )
+                ax.plot(
+                    [initial_landmark[0], landmark[0]],
+                    [initial_landmark[1], landmark[1]],
+                    color="#777777",
+                    linestyle="dashed",
+                    linewidth=1.4,
+                    alpha=0.65,
+                    zorder=12,
+                )
+                ax.text(
+                    initial_landmark[0] - 0.12,
+                    initial_landmark[1] + 0.20,
+                    "l0 inicial",
+                    fontsize=6.4,
+                    color="#777777",
+                    ha="right",
+                )
+
+        self._dibujar_pose_error_pose_landmark(
+            ax,
+            pose,
+            "#4C9ED9",
+            "#1F4F73",
+            "x0 estimada",
+            zorder=20,
+        )
+        self._dibujar_sensor_error_pose_landmark(
+            ax,
+            sensor,
+            "#1F4F73",
+            "sensor",
+            zorder=24,
+        )
+
+        if state.get("phase") == "calibration_wrong":
+            true_sensor = result["true_evaluation"]["sensor_pose"]
+            self._dibujar_sensor_error_pose_landmark(
+                ax,
+                true_sensor,
+                "#777777",
+                "sensor real",
+                alpha=0.58,
+                zorder=14,
+            )
+
+        ax.scatter(
+            [landmark[0]],
+            [landmark[1]],
+            s=125,
+            marker="D",
+            facecolor="#F28E2B",
+            edgecolor="#8A4B08",
+            linewidth=1.8,
+            zorder=25,
+        )
+        ax.text(
+            landmark[0] + 0.12,
+            landmark[1] - 0.24,
+            "l0 estimado",
+            fontsize=7.0,
+            fontweight="bold",
+            color="#8A4B08",
+            ha="left",
+            va="top",
+            zorder=26,
+        )
+
+        if state.get("show_measurement", False):
+            endpoint = evaluation["measurement_endpoint_global"]
+            ax.plot(
+                [sensor[0], endpoint[0]],
+                [sensor[1], endpoint[1]],
+                color="#2E8B57",
+                linewidth=2.8,
+                linestyle="dashed",
+                zorder=18,
+            )
+            ax.scatter(
+                [endpoint[0]], [endpoint[1]],
+                s=74, marker="o", facecolor="white",
+                edgecolor="#2E8B57", linewidth=1.7, zorder=21,
+            )
+            ax.text(
+                endpoint[0] - 0.12,
+                endpoint[1] + 0.20,
+                "extremo medido",
+                fontsize=6.6,
+                color="#245B3A",
+                ha="right",
+                va="bottom",
+                zorder=22,
+            )
+
+        if state.get("show_prediction", False):
+            ax.plot(
+                [sensor[0], landmark[0]],
+                [sensor[1], landmark[1]],
+                color="#8E5EA2",
+                linewidth=2.8,
+                zorder=19,
+            )
+
+        if state.get("show_range_error", False) or state.get("show_bearing_error", False):
+            endpoint = evaluation["measurement_endpoint_global"]
+            ax.add_patch(
+                FancyArrowPatch(
+                    endpoint,
+                    landmark,
+                    arrowstyle="<->",
+                    mutation_scale=11,
+                    linewidth=2.2,
+                    color="#C62828",
+                    connectionstyle="arc3,rad=0.08",
+                    zorder=28,
+                )
+            )
+            ax.text(
+                (endpoint[0] + landmark[0]) / 2 - 0.08,
+                (endpoint[1] + landmark[1]) / 2 + 0.32,
+                "discrepancia geométrica",
+                fontsize=6.5,
+                fontweight="bold",
+                color="#7A1D1D",
+                ha="center",
+                zorder=29,
+            )
+
+        ax.text(
+            0.02,
+            0.02,
+            "El sensor no coincide necesariamente con el origen del robot.",
+            transform=ax.transAxes,
+            fontsize=7.0,
+            color="#444444",
+            ha="left",
+            va="bottom",
+        )
+
+    @staticmethod
+    def _covarianza_polar_a_cartesiana(measurement, covariance):
+        """Propaga localmente una covarianza rango-rumbo a cartesiano."""
+
+        measurement = np.asarray(measurement, dtype=float)
+        covariance = np.asarray(covariance, dtype=float)
+        r, beta = measurement
+        jacobian = np.array(
+            [
+                [cos(beta), -r * sin(beta)],
+                [sin(beta), r * cos(beta)],
+            ],
+            dtype=float,
+        )
+        return jacobian @ covariance @ jacobian.T
+
+    def _dibujar_marco_local_error_pose_landmark(self, ax, result, state):
+        """Dibuja medida, predicción, distancias y ángulos en el sensor."""
+
+        ax.clear()
+        ax.set_aspect("equal", adjustable="box")
+        ax.set_xlim(-0.45, 5.35)
+        ax.set_ylim(-2.60, 3.35)
+        ax.grid(True, linewidth=0.55, alpha=0.20)
+        ax.set_xlabel("eje x del sensor [m]", fontsize=8)
+        ax.set_ylabel("eje y del sensor [m]", fontsize=8)
+        ax.tick_params(labelsize=7)
+        ax.set_title("Medición frente a predicción", fontsize=11.0, fontweight="bold")
+
+        evaluation = state["evaluation"]
+        measurement_vector = evaluation["measurement_cartesian"]
+        prediction_vector = evaluation["prediction_cartesian"]
+        measurement = evaluation["measurement"]
+        prediction = evaluation["prediction"]
+
+        ax.axhline(0.0, color="#1F4F73", linewidth=1.3, alpha=0.70)
+        ax.axvline(0.0, color="#1F4F73", linewidth=1.0, alpha=0.45)
+        ax.scatter(
+            [0.0], [0.0], marker="s", s=70,
+            facecolor="white", edgecolor="#1F4F73", linewidth=1.7, zorder=25,
+        )
+        ax.text(0.08, 0.16, "sensor", fontsize=7.0, fontweight="bold", color="#1F4F73")
+
+        if state.get("show_uncertainty", False):
+            covariance_cartesian = self._covarianza_polar_a_cartesiana(
+                measurement,
+                result["covariance"],
+            )
+            values, vectors = np.linalg.eigh(covariance_cartesian)
+            order = np.argsort(values)[::-1]
+            values = values[order]
+            vectors = vectors[:, order]
+            angle = degrees(np.arctan2(vectors[1, 0], vectors[0, 0]))
+            width, height = 2.0 * 2.0 * np.sqrt(np.maximum(values, 0.0))
+            ellipse = Ellipse(
+                measurement_vector,
+                width=width,
+                height=height,
+                angle=angle,
+                facecolor="#B7E4C7",
+                edgecolor="#2E8B57",
+                linewidth=1.5,
+                alpha=0.28,
+                zorder=10,
+            )
+            ax.add_patch(ellipse)
+
+        if state.get("show_measurement", False):
+            ax.add_patch(
+                FancyArrowPatch(
+                    (0.0, 0.0),
+                    measurement_vector,
+                    arrowstyle="-|>",
+                    mutation_scale=13,
+                    linewidth=2.8,
+                    linestyle="dashed",
+                    color="#2E8B57",
+                    zorder=20,
+                )
+            )
+            ax.scatter(
+                [measurement_vector[0]], [measurement_vector[1]],
+                s=75, facecolor="white", edgecolor="#2E8B57",
+                linewidth=1.7, zorder=24,
+            )
+            midpoint = 0.52 * measurement_vector
+            ax.text(
+                midpoint[0], midpoint[1] + 0.12,
+                f"r={measurement[0]:.3f} m",
+                fontsize=6.9, fontweight="bold", color="#245B3A",
+                ha="center", zorder=25,
+            )
+
+        if state.get("show_prediction", False):
+            ax.add_patch(
+                FancyArrowPatch(
+                    (0.0, 0.0),
+                    prediction_vector,
+                    arrowstyle="-|>",
+                    mutation_scale=13,
+                    linewidth=2.9,
+                    color="#8E5EA2",
+                    zorder=21,
+                )
+            )
+            ax.scatter(
+                [prediction_vector[0]], [prediction_vector[1]],
+                s=75, marker="D", facecolor="#FBE5A6", edgecolor="#8E5EA2",
+                linewidth=1.7, zorder=24,
+            )
+            midpoint = 0.56 * prediction_vector
+            ax.text(
+                midpoint[0], midpoint[1] - 0.16,
+                f"r̂={prediction[0]:.3f} m",
+                fontsize=6.9, fontweight="bold", color="#5A316B",
+                ha="center", zorder=25,
+            )
+
+        if state.get("show_range_error", False):
+            unit_prediction = prediction_vector / max(np.linalg.norm(prediction_vector), 1e-12)
+            measured_on_prediction = measurement[0] * unit_prediction
+            ax.add_patch(
+                FancyArrowPatch(
+                    measured_on_prediction,
+                    prediction_vector,
+                    arrowstyle="<->",
+                    mutation_scale=12,
+                    linewidth=2.8,
+                    color="#C62828",
+                    zorder=28,
+                )
+            )
+            center = 0.5 * (measured_on_prediction + prediction_vector)
+            ax.text(
+                center[0] + 0.10,
+                center[1] - 0.15,
+                f"e_r={evaluation['range_error']:+.3f} m",
+                fontsize=7.0,
+                fontweight="bold",
+                color="#7A1D1D",
+                zorder=29,
+            )
+
+        max_arc_radius = 0.90
+        if state.get("show_measurement", False):
+            beta_deg = degrees(measurement[1])
+            theta1, theta2 = sorted((0.0, beta_deg))
+            ax.add_patch(
+                Arc(
+                    (0.0, 0.0),
+                    2 * max_arc_radius,
+                    2 * max_arc_radius,
+                    angle=0.0,
+                    theta1=theta1,
+                    theta2=theta2,
+                    linewidth=2.1,
+                    linestyle="dashed",
+                    color="#2E8B57",
+                    zorder=16,
+                )
+            )
+            ax.text(
+                0.64 * cos(measurement[1] / 2),
+                0.64 * sin(measurement[1] / 2) + 0.05,
+                f"β={beta_deg:.2f}°",
+                fontsize=6.7,
+                color="#245B3A",
+                ha="center",
+            )
+
+        if state.get("show_prediction", False):
+            beta_hat_deg = degrees(prediction[1])
+            theta1, theta2 = sorted((0.0, beta_hat_deg))
+            ax.add_patch(
+                Arc(
+                    (0.0, 0.0),
+                    2 * (max_arc_radius + 0.18),
+                    2 * (max_arc_radius + 0.18),
+                    angle=0.0,
+                    theta1=theta1,
+                    theta2=theta2,
+                    linewidth=2.2,
+                    color="#8E5EA2",
+                    zorder=17,
+                )
+            )
+            ax.text(
+                0.88 * cos(prediction[1] / 2),
+                0.88 * sin(prediction[1] / 2) - 0.08,
+                f"β̂={beta_hat_deg:.2f}°",
+                fontsize=6.7,
+                color="#5A316B",
+                ha="center",
+            )
+
+        if state.get("show_bearing_error", False):
+            start_deg = degrees(measurement[1])
+            error_deg = degrees(evaluation["bearing_error"])
+            end_deg = start_deg + error_deg
+            theta1, theta2 = sorted((start_deg, end_deg))
+            ax.add_patch(
+                Arc(
+                    (0.0, 0.0),
+                    2 * 1.40,
+                    2 * 1.40,
+                    angle=0.0,
+                    theta1=theta1,
+                    theta2=theta2,
+                    linewidth=3.0,
+                    color="#C62828",
+                    zorder=30,
+                )
+            )
+            middle = np.deg2rad((start_deg + end_deg) / 2.0)
+            ax.text(
+                1.52 * cos(middle),
+                1.52 * sin(middle),
+                f"e_β={error_deg:+.2f}°",
+                fontsize=7.0,
+                fontweight="bold",
+                color="#7A1D1D",
+                ha="center",
+                va="center",
+                zorder=31,
+            )
+
+        ax.text(
+            0.98,
+            0.02,
+            "Todos los vectores se expresan en el mismo marco del sensor.",
+            transform=ax.transAxes,
+            fontsize=6.9,
+            color="#444444",
+            ha="right",
+            va="bottom",
+        )
+
+    def _dibujar_metricas_error_pose_landmark(self, ax, result, state):
+        """Muestra residuos, incertidumbre, jacobianos y convergencia."""
+
+        ax.clear()
+        ax.axis("off")
+        ax.set_xlim(0, 1)
+        ax.set_ylim(0, 1)
+
+        evaluation = state["evaluation"]
+        measurement = evaluation["measurement"]
+        prediction = evaluation["prediction"]
+        residual = evaluation["residual"]
+
+        ax.text(
+            0.015,
+            0.955,
+            "Valores calculados",
+            fontsize=11.2,
+            fontweight="bold",
+            ha="left",
+            va="top",
+        )
+
+        cards = [
+            (
+                "Medición z · fija",
+                f"r={measurement[0]:.4f} m\nβ={degrees(measurement[1]):.4f}°",
+                "#D5E8D4",
+                "#2E8B57",
+            ),
+            (
+                "Predicción h(x,l)",
+                f"r̂={prediction[0]:.4f} m\nβ̂={degrees(prediction[1]):.4f}°",
+                "#E8D7F1",
+                "#8E5EA2",
+            ),
+            (
+                "Residuo",
+                f"e_r={residual[0]:+.4f} m\ne_β={degrees(residual[1]):+.4f}°",
+                "#F7C6C7",
+                "#C62828",
+            ),
+            (
+                "Mahalanobis y coste",
+                f"eᵀΩe={evaluation['mahalanobis']:.4f}\nF={evaluation['quadratic_cost']:.4f}",
+                "#FBE5A6",
+                "#8A6D1D",
+            ),
+        ]
+
+        card_width = 0.145
+        card_height = 0.48
+        gap = 0.012
+        start_x = 0.015
+        for index, (title, value, face, edge) in enumerate(cards):
+            x = start_x + index * (card_width + gap)
+            ax.add_patch(
+                Rectangle(
+                    (x, 0.36),
+                    card_width,
+                    card_height,
+                    facecolor=face,
+                    edgecolor=edge,
+                    linewidth=1.5,
+                )
+            )
+            ax.text(
+                x + card_width / 2,
+                0.745,
+                title,
+                fontsize=6.9,
+                fontweight="bold",
+                color=edge,
+                ha="center",
+                va="center",
+            )
+            ax.text(
+                x + card_width / 2,
+                0.570,
+                value,
+                fontsize=6.6,
+                family="monospace",
+                ha="center",
+                va="center",
+                linespacing=1.45,
+            )
+
+        information = result["information"]
+        contributions = evaluation["contributions"]
+        ax.text(
+            0.015,
+            0.245,
+            (
+                "Σ = diag("
+                f"{result['covariance'][0,0]:.5f}, {result['covariance'][1,1]:.7f})"
+                "   ·   Ω = diag("
+                f"{information[0,0]:.2f}, {information[1,1]:.2f})"
+            ),
+            fontsize=6.8,
+            family="monospace",
+            ha="left",
+            va="center",
+            color="#444444",
+        )
+        ax.text(
+            0.015,
+            0.145,
+            (
+                "contribuciones Mahalanobis: "
+                f"rango={contributions[0]:.4f} · rumbo={contributions[1]:.4f}"
+                f"   ·   Huber: w={evaluation['huber_weight']:.4f}, "
+                f"ρ={evaluation['huber_cost']:.4f}"
+            ),
+            fontsize=6.8,
+            ha="left",
+            va="center",
+            color="#444444",
+        )
+
+        # Zona derecha: jacobianos u optimización.
+        right_x = 0.665
+        right_width = 0.320
+        ax.add_patch(
+            Rectangle(
+                (right_x, 0.36),
+                right_width,
+                0.48,
+                facecolor="white",
+                edgecolor="#777777",
+                linewidth=1.3,
+            )
+        )
+
+        if state.get("show_wrap", False):
+            wrap = result["angle_wrap"]
+            ax.text(
+                right_x + right_width / 2,
+                0.735,
+                "Normalización angular",
+                fontsize=8.0,
+                fontweight="bold",
+                color="#7A1D1D",
+                ha="center",
+            )
+            ax.text(
+                right_x + right_width / 2,
+                0.575,
+                (
+                    f"crudo: {degrees(wrap['raw_error']):.1f}°\n"
+                    f"normalizado: {degrees(wrap['normalized_error']):.1f}°"
+                ),
+                fontsize=8.5,
+                family="monospace",
+                fontweight="bold",
+                ha="center",
+                va="center",
+                color="#7A1D1D",
+            )
+        elif state.get("show_jacobians", False) or state.get("focus") in {"observability", "summary"}:
+            jac = result["jacobians"]
+            obs = result["observability"]
+            ax.text(
+                right_x + right_width / 2,
+                0.775,
+                "Jacobianos y rango local",
+                fontsize=7.8,
+                fontweight="bold",
+                color="#1F4F73",
+                ha="center",
+            )
+            ax.text(
+                right_x + 0.018,
+                0.670,
+                (
+                    "A=∂e/∂x: 2×3\n"
+                    "B=∂e/∂l: 2×2\n"
+                    f"error A: {jac['pose_max_error']:.2e}\n"
+                    f"error B: {jac['landmark_max_error']:.2e}"
+                ),
+                fontsize=6.5,
+                family="monospace",
+                ha="left",
+                va="top",
+            )
+            ax.text(
+                right_x + 0.185,
+                0.670,
+                (
+                    f"conjunto: r={obs['joint']['rank']}, n={obs['joint']['nullity']}\n"
+                    f"solo pose: r={obs['pose_only']['rank']}, n={obs['pose_only']['nullity']}\n"
+                    f"solo landmark: r={obs['landmark_only']['rank']}, n={obs['landmark_only']['nullity']}\n"
+                    f"lin. error: {result['linearization']['error_norm']:.2e}"
+                ),
+                fontsize=6.5,
+                family="monospace",
+                ha="left",
+                va="top",
+            )
+        else:
+            history = result["optimization"]["history"]
+            costs = [result["optimization"]["initial_evaluation"]["quadratic_cost"]]
+            costs.extend(entry["cost_after"] for entry in history)
+            max_cost = max(costs) if costs else 1.0
+            normalized = [value / max(max_cost, 1e-15) for value in costs]
+            x_values = np.linspace(right_x + 0.04, right_x + right_width - 0.04, len(normalized))
+            y_values = 0.42 + 0.29 * (1.0 - np.asarray(normalized))
+            ax.plot(
+                x_values,
+                y_values,
+                color="#4C9ED9",
+                linewidth=2.0,
+                marker="o",
+                markersize=3.5,
+                zorder=4,
+            )
+            ax.text(
+                right_x + right_width / 2,
+                0.775,
+                "Corrección del landmark",
+                fontsize=7.8,
+                fontweight="bold",
+                color="#1F4F73",
+                ha="center",
+            )
+            ax.text(
+                right_x + right_width / 2,
+                0.385,
+                (
+                    f"{result['optimization']['iterations']} iteraciones · "
+                    f"F final={result['optimized_evaluation']['quadratic_cost']:.2e}"
+                ),
+                fontsize=6.6,
+                color="#444444",
+                ha="center",
+            )
+
+        ax.text(
+            0.985,
+            0.115,
+            (
+                "e_cart = "
+                f"({evaluation['cartesian_residual'][0]:+.4f}, "
+                f"{evaluation['cartesian_residual'][1]:+.4f}) m"
+            ),
+            fontsize=6.8,
+            family="monospace",
+            ha="right",
+            va="center",
+            color="#444444",
+        )
+
+    def _dibujar_estado_error_pose_landmark(
+        self,
+        info_ax,
+        global_ax,
+        local_ax,
+        metrics_ax,
+        result,
+        state,
+    ):
+        """Dibuja un estado completo del apartado 6.5."""
+
+        self._dibujar_info_error_pose_landmark(info_ax, result, state)
+        self._dibujar_geometria_global_error_pose_landmark(global_ax, result, state)
+        self._dibujar_marco_local_error_pose_landmark(local_ax, result, state)
+        self._dibujar_metricas_error_pose_landmark(metrics_ax, result, state)
+
+    def animate_pose_landmark_error(
+        self,
+        result,
+        states,
+        title="Error de observación pose-landmark",
+        final_image_path=None,
+        repeat=False,
+    ):
+        """
+        Anima medida, predicción, residuo, incertidumbre y sensibilidad.
+
+        La imagen final conserva la discrepancia inicial y muestra:
+        - pose y landmark estimados;
+        - rango y rumbo medidos;
+        - rango y rumbo predichos;
+        - errores de distancia y ángulo;
+        - Mahalanobis, coste, jacobianos y observabilidad local.
+        """
+
+        if not states:
+            raise ValueError(
+                "La lista de estados del error pose-landmark no puede estar vacía."
+            )
+        if result is None:
+            raise ValueError("El resultado pose-landmark no puede ser nulo.")
+
+        required = {
+            "graph",
+            "true_pose",
+            "initial_pose",
+            "true_landmark",
+            "initial_landmark",
+            "optimized_landmark",
+            "measurement",
+            "covariance",
+            "information",
+            "initial_evaluation",
+            "optimized_evaluation",
+            "jacobians",
+            "observability",
+            "optimization",
+            "angle_wrap",
+        }
+        missing = required.difference(result)
+        if missing:
+            raise ValueError(
+                "Faltan datos del resultado: " + ", ".join(sorted(missing))
+            )
+
+        (
+            fig,
+            info_ax,
+            global_ax,
+            local_ax,
+            metrics_ax,
+        ) = self._preparar_figura_error_pose_landmark(title)
+
+        if final_image_path is not None:
+            self._dibujar_estado_error_pose_landmark(
+                info_ax=info_ax,
+                global_ax=global_ax,
+                local_ax=local_ax,
+                metrics_ax=metrics_ax,
+                result=result,
+                state=states[-1],
+            )
+            final_image_path = Path(final_image_path)
+            final_image_path.parent.mkdir(parents=True, exist_ok=True)
+            fig.savefig(final_image_path, dpi=200, bbox_inches="tight")
+            print(f"Imagen final guardada en: {final_image_path}")
+
+        def init():
+            self._dibujar_estado_error_pose_landmark(
+                info_ax=info_ax,
+                global_ax=global_ax,
+                local_ax=local_ax,
+                metrics_ax=metrics_ax,
+                result=result,
+                state=states[0],
+            )
+            return []
+
+        def update(frame_index):
+            self._dibujar_estado_error_pose_landmark(
+                info_ax=info_ax,
+                global_ax=global_ax,
+                local_ax=local_ax,
+                metrics_ax=metrics_ax,
+                result=result,
+                state=states[frame_index],
+            )
+            return []
+
+        self.animation = FuncAnimation(
+            fig,
+            update,
+            frames=len(states),
+            init_func=init,
+            interval=self.interval,
+            repeat=repeat,
+            blit=False,
+        )
+        plt.show()
+        return self.animation
