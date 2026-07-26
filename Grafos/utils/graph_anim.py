@@ -31,6 +31,7 @@ class GraphAnimator:
     - Pose Graph SLAM 2D con prior, odometría, cierre y optimización,
     - loop closure con reconocimiento, verificación geométrica y robustez,
     - landmarks en SLAM con referencias conocidas y variables estimadas,
+    - asociación de datos con gating, matching global y RANSAC,
     - caminos mínimos con Bellman-Ford,
     - caminos mínimos con Floyd-Warshall,
     - árboles de expansión mínima con Prim y Kruskal,
@@ -23878,6 +23879,1177 @@ class GraphAnimator:
                 global_ax=global_ax,
                 local_ax=local_ax,
                 metrics_ax=metrics_ax,
+                result=result,
+                state=states[frame_index],
+            )
+            return []
+
+        self.animation = FuncAnimation(
+            fig,
+            update,
+            frames=len(states),
+            init_func=init,
+            interval=self.interval,
+            repeat=repeat,
+            blit=False,
+        )
+        plt.show()
+        return self.animation
+
+    # ------------------------------------------------------------------
+    # Elementos específicos de asociación de datos
+    # ------------------------------------------------------------------
+
+    def _preparar_figura_asociacion_datos(self, title):
+        """Crea la distribución visual del apartado de asociación de datos."""
+
+        fig = plt.figure(figsize=self.figsize)
+        grid = fig.add_gridspec(
+            2,
+            3,
+            width_ratios=[1.50, 3.15, 3.15],
+            height_ratios=[1.0, 1.0],
+            wspace=0.11,
+            hspace=0.16,
+        )
+        info_ax = fig.add_subplot(grid[:, 0])
+        scene_ax = fig.add_subplot(grid[0, 1])
+        matching_ax = fig.add_subplot(grid[0, 2])
+        matrix_ax = fig.add_subplot(grid[1, 1])
+        verification_ax = fig.add_subplot(grid[1, 2])
+
+        fig.suptitle(title, fontsize=15, fontweight="bold")
+        fig.subplots_adjust(
+            left=0.025,
+            right=0.985,
+            top=0.925,
+            bottom=0.055,
+        )
+        return (
+            fig,
+            info_ax,
+            scene_ax,
+            matching_ax,
+            matrix_ax,
+            verification_ax,
+        )
+
+    @staticmethod
+    def _rotacion_asociacion_datos(theta):
+        """Devuelve una matriz de rotación 2D para la visualización."""
+
+        c = cos(float(theta))
+        s = sin(float(theta))
+        return np.array([[c, -s], [s, c]], dtype=float)
+
+    @staticmethod
+    def _colores_asociacion_datos():
+        """Devuelve una paleta estable para candidatos y decisiones."""
+
+        return {
+            "landmark": "#222222",
+            "observation": "#4C9ED9",
+            "candidate": "#B8B8B8",
+            "correct": "#2E8B57",
+            "doubtful": "#F28E2B",
+            "false": "#C62828",
+            "new": "#8E5EA2",
+            "selected": "#E45756",
+            "gate": "#7AA6C2",
+            "independent": "#8E5EA2",
+            "global": "#2E8B57",
+        }
+
+    def _dibujar_leyenda_asociacion_datos(self, ax):
+        """Dibuja una leyenda compacta en el panel de información."""
+
+        colores = self._colores_asociacion_datos()
+        elementos = [
+            Line2D(
+                [0],
+                [0],
+                marker="o",
+                color="none",
+                markerfacecolor="white",
+                markeredgecolor=colores["landmark"],
+                markersize=8,
+                label="Landmark del mapa",
+            ),
+            Line2D(
+                [0],
+                [0],
+                marker="^",
+                color="none",
+                markerfacecolor=colores["observation"],
+                markeredgecolor="#1F4F73",
+                markersize=8,
+                label="Observación",
+            ),
+            Line2D(
+                [0],
+                [0],
+                color=colores["candidate"],
+                linewidth=2,
+                label="Candidato",
+            ),
+            Line2D(
+                [0],
+                [0],
+                color=colores["correct"],
+                linewidth=3,
+                label="Correcta aceptada",
+            ),
+            Line2D(
+                [0],
+                [0],
+                color=colores["doubtful"],
+                linewidth=3,
+                linestyle="dashed",
+                label="Dudosa",
+            ),
+            Line2D(
+                [0],
+                [0],
+                color=colores["false"],
+                linewidth=3,
+                label="Falsa / rechazada",
+            ),
+            Line2D(
+                [0],
+                [0],
+                marker="*",
+                color="none",
+                markerfacecolor=colores["new"],
+                markeredgecolor="#5A316B",
+                markersize=10,
+                label="Observación nueva",
+            ),
+        ]
+        ax.legend(
+            handles=elementos,
+            loc="lower center",
+            bbox_to_anchor=(0.5, 0.025),
+            fontsize=6.8,
+            framealpha=0.97,
+            ncol=1,
+            borderpad=0.55,
+        )
+
+    def _dibujar_info_asociacion_datos(self, ax, result, state):
+        """Muestra fase, criterios, selección y métricas acumuladas."""
+
+        ax.clear()
+        ax.axis("off")
+        ax.set_xlim(0, 1)
+        ax.set_ylim(0, 1)
+
+        phase_titles = {
+            "intro": "Problema",
+            "landmarks": "Mapa conocido",
+            "observations": "Observaciones",
+            "descriptor_candidates": "Propuesta visual",
+            "gating": "Gate geométrico",
+            "cost_matrix": "Matriz de costes",
+            "independent_matching": "Vecino independiente",
+            "global_matching": "Matching global",
+            "false_alias": "Aliasing perceptual",
+            "ransac": "Verificación RANSAC",
+            "decisions": "Decisión final",
+            "false_effect": "Peligro del falso match",
+            "metrics": "Evaluación",
+            "summary": "Resumen",
+        }
+        phase = state.get("phase", "intro")
+        ax.text(
+            0.50,
+            0.985,
+            "Asociación de datos",
+            fontsize=12.5,
+            fontweight="bold",
+            ha="center",
+            va="top",
+        )
+        ax.text(
+            0.50,
+            0.940,
+            phase_titles.get(phase, phase),
+            fontsize=9.2,
+            fontweight="bold",
+            color="#1F4F73",
+            ha="center",
+            va="top",
+        )
+
+        ax.text(
+            0.06,
+            0.865,
+            state.get("message", ""),
+            fontsize=7.6,
+            ha="left",
+            va="top",
+            wrap=True,
+            bbox={
+                "boxstyle": "round,pad=0.42",
+                "fc": "white",
+                "ec": "#888888",
+                "alpha": 0.98,
+            },
+        )
+
+        selected = state.get("selected_observation")
+        if selected is not None:
+            truth = result["true_associations"].get(selected)
+            decision = result["decisions"].get(selected)
+            lines = [
+                f"Observación: {selected}",
+                f"Origen real: {truth if truth is not None else 'nuevo'}",
+            ]
+            if decision is not None and state.get("show_global", False):
+                assigned = decision.get("landmark")
+                lines.append(
+                    f"Asignación: {assigned if assigned is not None else '∅'}"
+                )
+                lines.append(f"Estado: {decision.get('status')}")
+            ax.text(
+                0.06,
+                0.710,
+                "\n".join(lines),
+                fontsize=7.5,
+                family="monospace",
+                ha="left",
+                va="top",
+                bbox={
+                    "boxstyle": "round,pad=0.35",
+                    "fc": "#F7F7F7",
+                    "ec": "#999999",
+                },
+            )
+
+        ax.text(
+            0.06,
+            0.535,
+            (
+                f"Landmarks: {len(result['landmarks'])}\n"
+                f"Observaciones: {len(result['observations'])}\n"
+                f"Candidatos visuales: {len(result['candidates'])}\n"
+                f"Pares dentro del gate: "
+                f"{int(np.sum(np.isfinite(result['cost_matrix'])))}"
+            ),
+            fontsize=7.3,
+            family="monospace",
+            ha="left",
+            va="top",
+        )
+
+        ax.text(
+            0.06,
+            0.395,
+            (
+                "Criterios\n"
+                "─────────\n"
+                "descriptor: top-3\n"
+                "Mahalanobis ≤ 9.21\n"
+                "asignación uno-a-uno\n"
+                "RANSAC: error ≤ 0.26 m"
+            ),
+            fontsize=7.1,
+            family="monospace",
+            ha="left",
+            va="top",
+        )
+
+        metrics = result["metrics"]
+        if state.get("show_metrics", False) or phase == "summary":
+            ax.text(
+                0.06,
+                0.235,
+                (
+                    f"precision = {metrics['precision']:.3f}\n"
+                    f"recall    = {metrics['recall']:.3f}\n"
+                    f"F1        = {metrics['f1']:.3f}\n"
+                    f"factores  = {result['factor_graph'].number_of_edges()}"
+                ),
+                fontsize=7.4,
+                family="monospace",
+                fontweight="bold",
+                color="#1F4F73",
+                ha="left",
+                va="top",
+            )
+
+        self._dibujar_leyenda_asociacion_datos(ax)
+
+    def _dibujar_pose_asociacion_datos(self, ax, pose, color, label=None):
+        """Dibuja una pose como punto y flecha orientada."""
+
+        x, y, theta = pose
+        longitud = 0.65
+        ax.scatter(
+            [x],
+            [y],
+            s=90,
+            marker="o",
+            facecolor="white",
+            edgecolor=color,
+            linewidth=2.2,
+            zorder=22,
+        )
+        ax.arrow(
+            x,
+            y,
+            longitud * np.cos(theta),
+            longitud * np.sin(theta),
+            width=0.035,
+            head_width=0.20,
+            head_length=0.25,
+            length_includes_head=True,
+            color=color,
+            zorder=23,
+        )
+        if label:
+            ax.text(
+                x,
+                y - 0.42,
+                label,
+                fontsize=7.2,
+                fontweight="bold",
+                color=color,
+                ha="center",
+                va="top",
+                zorder=25,
+            )
+
+    def _configurar_eje_escena_asociacion(self, ax, result, title):
+        """Configura límites y cuadrícula de la escena geométrica."""
+
+        ax.clear()
+        ax.set_title(title, fontsize=10.2, fontweight="bold")
+        ax.grid(True, alpha=0.20)
+        ax.set_aspect("equal", adjustable="box")
+        ax.set_xlabel("x [m]", fontsize=7.5)
+        ax.set_ylabel("y [m]", fontsize=7.5)
+        ax.tick_params(labelsize=6.7)
+
+        puntos = [result["true_pose"][:2], result["estimated_pose"][:2]]
+        puntos.extend(result["landmarks"].values())
+        puntos.extend(result["observed_global_estimated"].values())
+        puntos = np.asarray(puntos, dtype=float)
+        ax.set_xlim(np.min(puntos[:, 0]) - 1.0, np.max(puntos[:, 0]) + 1.0)
+        ax.set_ylim(np.min(puntos[:, 1]) - 1.0, np.max(puntos[:, 1]) + 1.0)
+
+    def _dibujar_escena_asociacion_datos(self, ax, result, state):
+        """Dibuja robot, landmarks, observaciones, gates y asociaciones."""
+
+        self._configurar_eje_escena_asociacion(
+            ax,
+            result,
+            "Escena geométrica y asociaciones",
+        )
+        colores = self._colores_asociacion_datos()
+        numero_lm = min(
+            int(state.get("visible_landmarks", 0)),
+            len(result["landmark_names"]),
+        )
+        numero_obs = min(
+            int(state.get("visible_observations", 0)),
+            len(result["observation_names"]),
+        )
+        landmarks_visibles = result["landmark_names"][:numero_lm]
+        observaciones_visibles = result["observation_names"][:numero_obs]
+
+        self._dibujar_pose_asociacion_datos(
+            ax,
+            result["true_pose"],
+            "#555555",
+            "pose real",
+        )
+        if numero_obs > 0:
+            self._dibujar_pose_asociacion_datos(
+                ax,
+                result["estimated_pose"],
+                "#4C9ED9",
+                "pose estimada",
+            )
+
+        # Campo de visión aproximado.
+        pose = result["estimated_pose"]
+        for angulo in (
+            pose[2] - np.deg2rad(62),
+            pose[2] + np.deg2rad(62),
+        ):
+            ax.plot(
+                [pose[0], pose[0] + 9.2 * np.cos(angulo)],
+                [pose[1], pose[1] + 9.2 * np.sin(angulo)],
+                color="#BBBBBB",
+                linewidth=1.0,
+                linestyle="dashed",
+                zorder=2,
+            )
+
+        for nombre in landmarks_visibles:
+            posicion = result["landmarks"][nombre]
+            ax.scatter(
+                [posicion[0]],
+                [posicion[1]],
+                s=105,
+                marker="o",
+                facecolor="white",
+                edgecolor=colores["landmark"],
+                linewidth=2.0,
+                zorder=20,
+            )
+            ax.text(
+                posicion[0],
+                posicion[1] + 0.25,
+                nombre,
+                fontsize=7.4,
+                fontweight="bold",
+                ha="center",
+                va="bottom",
+                zorder=25,
+            )
+
+        selected = state.get("selected_observation")
+        for nombre in observaciones_visibles:
+            punto = result["observed_global_estimated"][nombre]
+            is_selected = nombre == selected
+            ax.scatter(
+                [punto[0]],
+                [punto[1]],
+                s=125 if is_selected else 90,
+                marker="^",
+                facecolor=(
+                    colores["selected"]
+                    if is_selected
+                    else colores["observation"]
+                ),
+                edgecolor="#1F4F73",
+                linewidth=1.4,
+                zorder=24,
+            )
+            ax.text(
+                punto[0],
+                punto[1] - 0.25,
+                nombre,
+                fontsize=7.0,
+                fontweight="bold",
+                ha="center",
+                va="top",
+                zorder=25,
+            )
+            if state.get("show_gates", False):
+                ax.add_patch(
+                    Ellipse(
+                        xy=punto,
+                        width=0.72,
+                        height=0.48,
+                        angle=np.rad2deg(result["estimated_pose"][2]),
+                        facecolor="none",
+                        edgecolor=colores["gate"],
+                        linewidth=1.0,
+                        linestyle="dashed",
+                        alpha=0.75,
+                        zorder=5,
+                    )
+                )
+
+        # Candidatos visuales en el orden en que aparecen.
+        numero_candidatos = min(
+            int(state.get("visible_candidates", 0)),
+            len(result["candidates"]),
+        )
+        for candidato in result["candidates"][:numero_candidatos]:
+            nombre_obs = candidato["observation"]
+            nombre_lm = candidato["landmark"]
+            if (
+                nombre_obs not in observaciones_visibles
+                or nombre_lm not in landmarks_visibles
+            ):
+                continue
+            punto_obs = result["observed_global_estimated"][nombre_obs]
+            punto_lm = result["landmarks"][nombre_lm]
+            if candidato.get("false_visual_alias") and state.get("show_false_alias", False):
+                color = colores["false"]
+                width = 3.0
+                style = "solid"
+                alpha = 0.95
+            elif candidato["inside_geometry_gate"]:
+                color = "#7F9F7F"
+                width = 1.7
+                style = "solid"
+                alpha = 0.75
+            else:
+                color = colores["candidate"]
+                width = 1.0
+                style = "dotted"
+                alpha = 0.45
+            ax.plot(
+                [punto_obs[0], punto_lm[0]],
+                [punto_obs[1], punto_lm[1]],
+                color=color,
+                linewidth=width,
+                linestyle=style,
+                alpha=alpha,
+                zorder=7,
+            )
+
+        mapping = None
+        mapping_color = None
+        if state.get("show_independent", False):
+            mapping = result["independent_associations"]
+            mapping_color = colores["independent"]
+        if state.get("show_global", False):
+            mapping = result["global_assignment"]["associations"]
+            mapping_color = colores["global"]
+
+        if mapping is not None:
+            for nombre_obs, nombre_lm in mapping.items():
+                if nombre_obs not in observaciones_visibles or nombre_lm is None:
+                    continue
+                punto_obs = result["observed_global_estimated"][nombre_obs]
+                punto_lm = result["landmarks"][nombre_lm]
+                ax.plot(
+                    [punto_obs[0], punto_lm[0]],
+                    [punto_obs[1], punto_lm[1]],
+                    color=mapping_color,
+                    linewidth=2.7,
+                    alpha=0.85,
+                    zorder=12,
+                )
+
+        if state.get("show_decisions", False):
+            for nombre_obs, decision in result["decisions"].items():
+                if nombre_obs not in observaciones_visibles:
+                    continue
+                punto_obs = result["observed_global_estimated"][nombre_obs]
+                status = decision["status"]
+                nombre_lm = decision["landmark"]
+                if status == "new":
+                    ax.scatter(
+                        [punto_obs[0]],
+                        [punto_obs[1]],
+                        s=210,
+                        marker="*",
+                        facecolor=colores["new"],
+                        edgecolor="#5A316B",
+                        linewidth=1.5,
+                        zorder=31,
+                    )
+                    continue
+                if nombre_lm is None:
+                    continue
+                punto_lm = result["landmarks"][nombre_lm]
+                color = colores.get(status, colores["candidate"])
+                style = "dashed" if status == "doubtful" else "solid"
+                ax.plot(
+                    [punto_obs[0], punto_lm[0]],
+                    [punto_obs[1], punto_lm[1]],
+                    color=color,
+                    linewidth=3.2,
+                    linestyle=style,
+                    alpha=0.98,
+                    zorder=30,
+                )
+
+        ax.text(
+            0.02,
+            0.02,
+            "○ landmark   ▲ observación   elipse: gate local",
+            transform=ax.transAxes,
+            fontsize=6.6,
+            color="#444444",
+            ha="left",
+            va="bottom",
+        )
+
+    def _dibujar_grafo_matching_asociacion_datos(self, ax, result, state):
+        """Dibuja el grafo bipartito de candidatos y asignaciones."""
+
+        ax.clear()
+        ax.axis("off")
+        ax.set_xlim(0, 1)
+        ax.set_ylim(0, 1)
+        ax.set_title("Grafo bipartito de matching", fontsize=10.2, fontweight="bold")
+        colores = self._colores_asociacion_datos()
+
+        nombres_lm = result["landmark_names"]
+        nombres_obs = result["observation_names"]
+        ys_lm = np.linspace(0.84, 0.16, len(nombres_lm))
+        ys_obs = np.linspace(0.87, 0.13, len(nombres_obs))
+        pos_lm = {nombre: (0.17, y) for nombre, y in zip(nombres_lm, ys_lm)}
+        pos_obs = {nombre: (0.83, y) for nombre, y in zip(nombres_obs, ys_obs)}
+
+        numero_lm = min(state.get("visible_landmarks", 0), len(nombres_lm))
+        numero_obs = min(state.get("visible_observations", 0), len(nombres_obs))
+        visibles_lm = set(nombres_lm[:numero_lm])
+        visibles_obs = set(nombres_obs[:numero_obs])
+        selected = state.get("selected_observation")
+
+        numero_candidatos = min(
+            int(state.get("visible_candidates", 0)),
+            len(result["candidates"]),
+        )
+        for candidato in result["candidates"][:numero_candidatos]:
+            obs = candidato["observation"]
+            lm = candidato["landmark"]
+            if obs not in visibles_obs or lm not in visibles_lm:
+                continue
+            x1, y1 = pos_lm[lm]
+            x2, y2 = pos_obs[obs]
+            if candidato.get("false_visual_alias") and state.get("show_false_alias", False):
+                color = colores["false"]
+                width = 2.8
+                style = "solid"
+                alpha = 0.95
+            elif candidato["inside_geometry_gate"]:
+                color = "#7F9F7F"
+                width = 1.6
+                style = "solid"
+                alpha = 0.75
+            else:
+                color = colores["candidate"]
+                width = 0.9
+                style = "dotted"
+                alpha = 0.38
+            ax.plot(
+                [x1, x2],
+                [y1, y2],
+                color=color,
+                linewidth=width,
+                linestyle=style,
+                alpha=alpha,
+                zorder=5,
+            )
+
+        mapping = None
+        color_mapping = None
+        if state.get("show_independent", False):
+            mapping = result["independent_associations"]
+            color_mapping = colores["independent"]
+        if state.get("show_global", False):
+            mapping = result["global_assignment"]["associations"]
+            color_mapping = colores["global"]
+        if mapping is not None:
+            for obs, lm in mapping.items():
+                if obs not in visibles_obs or lm not in visibles_lm or lm is None:
+                    continue
+                ax.plot(
+                    [pos_lm[lm][0], pos_obs[obs][0]],
+                    [pos_lm[lm][1], pos_obs[obs][1]],
+                    color=color_mapping,
+                    linewidth=2.8,
+                    alpha=0.90,
+                    zorder=12,
+                )
+
+        if state.get("show_decisions", False):
+            for obs, decision in result["decisions"].items():
+                lm = decision["landmark"]
+                if obs not in visibles_obs:
+                    continue
+                if decision["status"] == "new":
+                    continue
+                if lm is None or lm not in visibles_lm:
+                    continue
+                color = colores.get(decision["status"], colores["candidate"])
+                style = "dashed" if decision["status"] == "doubtful" else "solid"
+                ax.plot(
+                    [pos_lm[lm][0], pos_obs[obs][0]],
+                    [pos_lm[lm][1], pos_obs[obs][1]],
+                    color=color,
+                    linewidth=3.2,
+                    linestyle=style,
+                    zorder=20,
+                )
+
+        for nombre in nombres_lm:
+            if nombre not in visibles_lm:
+                continue
+            x, y = pos_lm[nombre]
+            ax.scatter(
+                [x],
+                [y],
+                s=280,
+                marker="o",
+                facecolor="white",
+                edgecolor=colores["landmark"],
+                linewidth=1.7,
+                zorder=25,
+            )
+            ax.text(x, y, nombre, fontsize=7.5, fontweight="bold", ha="center", va="center", zorder=30)
+
+        for nombre in nombres_obs:
+            if nombre not in visibles_obs:
+                continue
+            x, y = pos_obs[nombre]
+            decision = result["decisions"][nombre]
+            if state.get("show_decisions", False) and decision["status"] == "new":
+                marker = "*"
+                face = colores["new"]
+                size = 340
+            else:
+                marker = "^"
+                face = colores["selected"] if nombre == selected else colores["observation"]
+                size = 300 if nombre == selected else 250
+            ax.scatter(
+                [x],
+                [y],
+                s=size,
+                marker=marker,
+                facecolor=face,
+                edgecolor="#1F4F73",
+                linewidth=1.4,
+                zorder=26,
+            )
+            ax.text(x, y, nombre, fontsize=7.2, fontweight="bold", ha="center", va="center", zorder=30)
+
+        ax.text(0.17, 0.96, "LANDMARKS", fontsize=7.4, fontweight="bold", ha="center")
+        ax.text(0.83, 0.96, "OBSERVACIONES", fontsize=7.4, fontweight="bold", ha="center")
+
+        if state.get("show_independent", False):
+            subtitle = (
+                f"Vecino independiente · duplicidades: "
+                f"{result['method_comparison']['independent_duplicates']}"
+            )
+        elif state.get("show_global", False):
+            subtitle = "Matching global · restricción uno-a-uno"
+        else:
+            subtitle = "Apariencia propone; geometría filtra"
+        ax.text(
+            0.50,
+            0.035,
+            subtitle,
+            fontsize=7.2,
+            color="#444444",
+            ha="center",
+            va="bottom",
+        )
+
+    def _dibujar_matriz_costes_asociacion_datos(self, ax, result, state):
+        """Dibuja la matriz de costes y las celdas asignadas."""
+
+        ax.clear()
+        ax.axis("off")
+        ax.set_xlim(0, 1)
+        ax.set_ylim(0, 1)
+        ax.set_title("Matriz de costes después del gating", fontsize=10.2, fontweight="bold")
+
+        nombres_obs = result["observation_names"]
+        nombres_lm = result["landmark_names"]
+        matriz = result["cost_matrix"]
+        filas_visibles = (
+            int(state.get("matrix_rows", 0))
+            if state.get("show_cost_matrix", False)
+            else 0
+        )
+
+        start_x = 0.16
+        start_y = 0.12
+        cell_w = 0.112
+        cell_h = 0.095
+        colores = self._colores_asociacion_datos()
+
+        for columna, nombre_lm in enumerate(nombres_lm):
+            ax.text(
+                start_x + columna * cell_w + cell_w / 2,
+                start_y + len(nombres_obs) * cell_h + 0.038,
+                nombre_lm,
+                fontsize=7.3,
+                fontweight="bold",
+                ha="center",
+                va="center",
+            )
+
+        for fila, nombre_obs in enumerate(nombres_obs):
+            y = start_y + (len(nombres_obs) - 1 - fila) * cell_h
+            ax.text(
+                start_x - 0.035,
+                y + cell_h / 2,
+                nombre_obs,
+                fontsize=7.3,
+                fontweight="bold",
+                ha="right",
+                va="center",
+            )
+            for columna, nombre_lm in enumerate(nombres_lm):
+                x = start_x + columna * cell_w
+                visible = fila < filas_visibles
+                coste = matriz[fila, columna]
+                face = "#F7F7F7"
+                edge = "#BBBBBB"
+                width = 0.8
+                text = ""
+                text_color = "#333333"
+
+                if visible:
+                    if np.isfinite(coste):
+                        face = "#EAF2F7"
+                        text = f"{coste:.2f}"
+                    else:
+                        face = "#ECECEC"
+                        text = "×"
+                        text_color = "#999999"
+
+                    if state.get("show_independent", False):
+                        if result["independent_associations"].get(nombre_obs) == nombre_lm:
+                            edge = colores["independent"]
+                            width = 2.5
+                    if state.get("show_global", False):
+                        if result["global_assignment"]["associations"].get(nombre_obs) == nombre_lm:
+                            edge = colores["global"]
+                            width = 2.7
+                    if state.get("show_decisions", False):
+                        decision = result["decisions"][nombre_obs]
+                        if decision["landmark"] == nombre_lm:
+                            edge = colores.get(decision["status"], edge)
+                            width = 3.0
+
+                ax.add_patch(
+                    Rectangle(
+                        (x, y),
+                        cell_w,
+                        cell_h,
+                        facecolor=face,
+                        edgecolor=edge,
+                        linewidth=width,
+                    )
+                )
+                if visible:
+                    ax.text(
+                        x + cell_w / 2,
+                        y + cell_h / 2,
+                        text,
+                        fontsize=6.7,
+                        family="monospace",
+                        fontweight="bold" if width > 2.0 else "normal",
+                        color=text_color,
+                        ha="center",
+                        va="center",
+                    )
+
+        ax.text(
+            0.50,
+            0.055,
+            (
+                "×: fuera del gate   ·   borde morado: NN independiente   ·   "
+                "borde verde: matching global"
+            ),
+            fontsize=6.4,
+            color="#444444",
+            ha="center",
+            va="center",
+        )
+
+    def _dibujar_verificacion_asociacion_datos(self, ax, result, state):
+        """Muestra RANSAC, métricas y el efecto de un falso factor."""
+
+        ax.clear()
+        ax.set_title("Verificación geométrica y riesgo", fontsize=10.2, fontweight="bold")
+        colores = self._colores_asociacion_datos()
+
+        if state.get("show_ransac", False):
+            corr = result["ransac_correspondences"]
+            ransac = result["ransac"]
+            transformados = (
+                np.asarray(
+                    [
+                        result["true_pose"][:2]
+                    ]
+                )
+            )
+            transformados = (
+                np.asarray(corr["source_points"]) @ self._rotacion_asociacion_datos(ransac["pose"][2]).T
+                + ransac["pose"][:2]
+            )
+            destinos = np.asarray(corr["target_points"])
+            todos = np.vstack([transformados, destinos])
+            ax.set_xlim(np.min(todos[:, 0]) - 0.6, np.max(todos[:, 0]) + 0.6)
+            ax.set_ylim(np.min(todos[:, 1]) - 0.6, np.max(todos[:, 1]) + 0.6)
+            ax.set_aspect("equal", adjustable="box")
+            ax.grid(True, alpha=0.18)
+            ax.tick_params(labelsize=6.2)
+
+            for indice, ((obs, lm), p, q) in enumerate(
+                zip(corr["pairs"], transformados, destinos)
+            ):
+                es_inlier = bool(ransac["inliers"][indice])
+                color = colores["correct"] if es_inlier else colores["false"]
+                ax.plot(
+                    [p[0], q[0]],
+                    [p[1], q[1]],
+                    color=color,
+                    linewidth=2.0 if es_inlier else 2.5,
+                    linestyle="solid" if es_inlier else "dashed",
+                    alpha=0.85,
+                    zorder=8,
+                )
+                ax.scatter(
+                    [p[0]],
+                    [p[1]],
+                    s=55,
+                    marker="^",
+                    facecolor="#4C9ED9",
+                    edgecolor="#1F4F73",
+                    zorder=12,
+                )
+                ax.scatter(
+                    [q[0]],
+                    [q[1]],
+                    s=55,
+                    marker="o",
+                    facecolor="white",
+                    edgecolor="#222222",
+                    zorder=12,
+                )
+                ax.text(
+                    (p[0] + q[0]) / 2,
+                    (p[1] + q[1]) / 2,
+                    f"{obs}-{lm}",
+                    fontsize=5.5,
+                    color=color,
+                    ha="center",
+                    va="center",
+                )
+
+            ax.text(
+                0.02,
+                0.98,
+                (
+                    f"RANSAC: {ransac['inlier_count']} inliers · "
+                    f"{ransac['outlier_count']} outliers\n"
+                    f"RMSE = {ransac['rmse']:.3f} m"
+                ),
+                transform=ax.transAxes,
+                fontsize=7.0,
+                fontweight="bold",
+                ha="left",
+                va="top",
+                bbox={
+                    "boxstyle": "round,pad=0.30",
+                    "fc": "white",
+                    "ec": "#777777",
+                    "alpha": 0.96,
+                },
+            )
+        else:
+            ax.axis("off")
+            ax.text(
+                0.50,
+                0.58,
+                "La geometría conjunta\nse mostrará mediante RANSAC",
+                fontsize=10,
+                fontweight="bold",
+                color="#666666",
+                ha="center",
+                va="center",
+            )
+
+        if state.get("show_false_effect", False):
+            efecto = result["false_effect"]
+            valores = [
+                efecto["translation_shift_false"],
+                efecto["translation_shift_robust"],
+            ]
+            maximo = max(max(valores), 1e-9)
+            panel_x = 0.57
+            panel_y = 0.04
+            panel_w = 0.40
+            panel_h = 0.27
+            ax.add_patch(
+                Rectangle(
+                    (panel_x, panel_y),
+                    panel_w,
+                    panel_h,
+                    transform=ax.transAxes,
+                    facecolor="white",
+                    edgecolor="#777777",
+                    linewidth=1.0,
+                    alpha=0.95,
+                    zorder=40,
+                )
+            )
+            ax.text(
+                panel_x + panel_w / 2,
+                panel_y + panel_h - 0.025,
+                "Desplazamiento por z5-l2",
+                transform=ax.transAxes,
+                fontsize=6.3,
+                fontweight="bold",
+                ha="center",
+                va="top",
+                zorder=42,
+            )
+            base_y = panel_y + 0.055
+            usable_h = panel_h - 0.105
+            centers = [panel_x + panel_w * 0.31, panel_x + panel_w * 0.72]
+            labels = ["sin robustez", "Huber"]
+            for center, valor, label in zip(centers, valores, labels):
+                altura = usable_h * valor / maximo
+                ax.add_patch(
+                    Rectangle(
+                        (center - 0.035, base_y),
+                        0.070,
+                        altura,
+                        transform=ax.transAxes,
+                        facecolor="#4C9ED9",
+                        edgecolor="#1F4F73",
+                        linewidth=0.8,
+                        zorder=41,
+                    )
+                )
+                ax.text(
+                    center,
+                    base_y + altura + 0.008,
+                    f"{valor:.3f} m",
+                    transform=ax.transAxes,
+                    fontsize=5.5,
+                    ha="center",
+                    va="bottom",
+                    zorder=42,
+                )
+                ax.text(
+                    center,
+                    panel_y + 0.018,
+                    label,
+                    transform=ax.transAxes,
+                    fontsize=5.2,
+                    ha="center",
+                    va="bottom",
+                    zorder=42,
+                )
+
+        if state.get("show_metrics", False):
+            metrics = result["metrics"]
+            ax.text(
+                0.02,
+                0.02,
+                (
+                    f"precision={metrics['precision']:.3f} · "
+                    f"recall={metrics['recall']:.3f} · F1={metrics['f1']:.3f}"
+                ),
+                transform=ax.transAxes,
+                fontsize=6.8,
+                fontweight="bold",
+                color="#1F4F73",
+                ha="left",
+                va="bottom",
+                bbox={
+                    "boxstyle": "round,pad=0.25",
+                    "fc": "white",
+                    "ec": "#999999",
+                    "alpha": 0.95,
+                },
+            )
+
+    def _dibujar_estado_asociacion_datos(
+        self,
+        info_ax,
+        scene_ax,
+        matching_ax,
+        matrix_ax,
+        verification_ax,
+        result,
+        state,
+    ):
+        """Dibuja un estado completo de asociación de datos."""
+
+        self._dibujar_info_asociacion_datos(info_ax, result, state)
+        self._dibujar_escena_asociacion_datos(scene_ax, result, state)
+        self._dibujar_grafo_matching_asociacion_datos(matching_ax, result, state)
+        self._dibujar_matriz_costes_asociacion_datos(matrix_ax, result, state)
+        self._dibujar_verificacion_asociacion_datos(verification_ax, result, state)
+
+    def animate_data_association(
+        self,
+        result,
+        states,
+        title="Asociación de datos",
+        final_image_path=None,
+        repeat=False,
+    ):
+        """
+        Anima propuesta visual, gating, matching global y RANSAC.
+
+        La imagen final muestra:
+        - landmarks y observaciones;
+        - candidatos visuales y geométricos;
+        - matriz de costes;
+        - asociaciones correctas, dudosas y nuevas;
+        - alias perceptual rechazado;
+        - inliers y outliers de RANSAC;
+        - riesgo de aceptar una asociación falsa.
+        """
+
+        if not states:
+            raise ValueError(
+                "La lista de estados de asociación de datos no puede estar vacía."
+            )
+        if result is None:
+            raise ValueError("El resultado de asociación no puede ser nulo.")
+
+        required = {
+            "true_pose",
+            "estimated_pose",
+            "landmarks",
+            "observations",
+            "candidates",
+            "cost_matrix",
+            "independent_associations",
+            "global_assignment",
+            "decisions",
+            "ransac",
+            "false_effect",
+            "metrics",
+        }
+        missing = required.difference(result)
+        if missing:
+            raise ValueError(
+                "Faltan datos del resultado: " + ", ".join(sorted(missing))
+            )
+
+        (
+            fig,
+            info_ax,
+            scene_ax,
+            matching_ax,
+            matrix_ax,
+            verification_ax,
+        ) = self._preparar_figura_asociacion_datos(title)
+
+        if final_image_path is not None:
+            self._dibujar_estado_asociacion_datos(
+                info_ax=info_ax,
+                scene_ax=scene_ax,
+                matching_ax=matching_ax,
+                matrix_ax=matrix_ax,
+                verification_ax=verification_ax,
+                result=result,
+                state=states[-1],
+            )
+            final_image_path = Path(final_image_path)
+            final_image_path.parent.mkdir(parents=True, exist_ok=True)
+            fig.savefig(final_image_path, dpi=200, bbox_inches="tight")
+            print(f"Imagen final guardada en: {final_image_path}")
+
+        def init():
+            self._dibujar_estado_asociacion_datos(
+                info_ax=info_ax,
+                scene_ax=scene_ax,
+                matching_ax=matching_ax,
+                matrix_ax=matrix_ax,
+                verification_ax=verification_ax,
+                result=result,
+                state=states[0],
+            )
+            return []
+
+        def update(frame_index):
+            self._dibujar_estado_asociacion_datos(
+                info_ax=info_ax,
+                scene_ax=scene_ax,
+                matching_ax=matching_ax,
+                matrix_ax=matrix_ax,
+                verification_ax=verification_ax,
                 result=result,
                 state=states[frame_index],
             )
