@@ -3,6 +3,7 @@ from pathlib import Path
 
 import matplotlib.pyplot as plt
 import networkx as nx
+import numpy as np
 from matplotlib.animation import FuncAnimation
 from matplotlib.lines import Line2D
 from matplotlib.patches import Arc, Ellipse, FancyArrowPatch, Rectangle
@@ -25,6 +26,7 @@ class GraphAnimator:
     - incertidumbre, covarianza y matrices de información,
     - priors, libertad de gauge y anclaje de pose graphs,
     - optimización no lineal iterativa con Gauss-Newton y Levenberg-Marquardt,
+    - jacobianos, Hessianas y estructura dispersa en pose graphs,
     - caminos mínimos con Bellman-Ford,
     - caminos mínimos con Floyd-Warshall,
     - árboles de expansión mínima con Prim y Kruskal,
@@ -18389,4 +18391,820 @@ class GraphAnimator:
 
         plt.show()
 
+        return self.animation
+
+    # ------------------------------------------------------------------
+    # Elementos específicos de jacobianos y estructura dispersa
+    # ------------------------------------------------------------------
+
+    def _preparar_figura_matrices_slam(self, title):
+        """Crea una figura con grafo, jacobiano, Hessiana e información."""
+
+        fig = plt.figure(figsize=self.figsize)
+        grid = fig.add_gridspec(
+            2,
+            3,
+            width_ratios=[1.55, 3.05, 3.80],
+            height_ratios=[1.0, 1.0],
+            wspace=0.12,
+            hspace=0.16,
+        )
+
+        info_ax = fig.add_subplot(grid[:, 0])
+        graph_ax = fig.add_subplot(grid[:, 1])
+        jacobian_ax = fig.add_subplot(grid[0, 2])
+        hessian_ax = fig.add_subplot(grid[1, 2])
+
+        fig.suptitle(title, fontsize=15, fontweight="bold")
+        fig.subplots_adjust(
+            left=0.025,
+            right=0.985,
+            top=0.925,
+            bottom=0.055,
+        )
+
+        return fig, info_ax, graph_ax, jacobian_ax, hessian_ax
+
+    @staticmethod
+    def _formatear_porcentaje_dispersion(value):
+        return f"{100.0 * float(value):.1f}%"
+
+    def _dibujar_info_matrices_slam(self, ax, state):
+        """Dibuja métricas, ecuaciones y conexiones del apartado 5.7."""
+
+        ax.clear()
+        ax.axis("off")
+        ax.set_xlim(0, 1)
+        ax.set_ylim(0, 1)
+
+        metrics = dict(state.get("metrics", {}))
+        phase = state.get("phase", "")
+
+        ax.text(
+            0.50,
+            0.985,
+            "Estructura del sistema",
+            fontsize=11.0,
+            fontweight="bold",
+            ha="center",
+            va="top",
+        )
+
+        ax.text(
+            0.50,
+            0.935,
+            f"Paso {state.get('step', 0)} de {state.get('total_steps', 0)}",
+            fontsize=7.3,
+            ha="center",
+            va="top",
+            color="#555555",
+        )
+
+        cards = [
+            ("poses", metrics.get("pose_count", 0)),
+            ("factores", metrics.get("factor_count", 0)),
+            ("dim(X)", metrics.get("state_dimension", 0)),
+            ("dim(e)", metrics.get("residual_dimension", 0)),
+            ("nnz(J)", metrics.get("jacobian_nnz", 0)),
+            (
+                "densidad J",
+                self._formatear_porcentaje_dispersion(
+                    metrics.get("jacobian_density", 0.0)
+                ),
+            ),
+            ("nnz(H)", metrics.get("hessian_nnz", 0)),
+            (
+                "densidad H",
+                self._formatear_porcentaje_dispersion(
+                    metrics.get("hessian_density", 0.0)
+                ),
+            ),
+        ]
+
+        y = 0.865
+        for index, (label, value) in enumerate(cards):
+            column = index % 2
+            row = index // 2
+            x = 0.055 + column * 0.46
+            card_y = y - row * 0.074
+
+            rectangle = Rectangle(
+                (x, card_y - 0.027),
+                0.405,
+                0.055,
+                facecolor="#EDF3F8",
+                edgecolor="#7A9CB8",
+                linewidth=0.9,
+            )
+            ax.add_patch(rectangle)
+            ax.text(
+                x + 0.025,
+                card_y,
+                label,
+                fontsize=6.1,
+                ha="left",
+                va="center",
+                color="#555555",
+            )
+            ax.text(
+                x + 0.375,
+                card_y,
+                str(value),
+                fontsize=6.4,
+                fontweight="bold",
+                ha="right",
+                va="center",
+            )
+
+        equations = [
+            r"$e_k=e_k(x_{i_1},\ldots,x_{i_p})$",
+            r"$J=\partial e/\partial X$",
+            r"$H=J^T\Omega J$",
+            r"$g=J^T\Omega e$",
+            r"$H\Delta X=-g$",
+        ]
+
+        for equation, equation_y in zip(
+            equations,
+            [0.535, 0.465, 0.395, 0.325, 0.255],
+        ):
+            ax.text(
+                0.50,
+                equation_y,
+                equation,
+                fontsize=8.0,
+                ha="center",
+                va="center",
+                color="#1F4F73",
+                bbox={
+                    "boxstyle": "round,pad=0.22",
+                    "fc": "#EDF3F8",
+                    "ec": "#7A9CB8",
+                    "alpha": 0.96,
+                },
+            )
+
+        gauge_text = (
+            "sin prior: rango "
+            f"{metrics.get('rank_without_prior', 0)}, "
+            f"nulidad {metrics.get('nullity_without_prior', 0)}\n"
+            "con prior: rango "
+            f"{metrics.get('rank_with_prior', 0)}, "
+            f"nulidad {metrics.get('nullity_with_prior', 0)}"
+        )
+        ax.text(
+            0.50,
+            0.175,
+            gauge_text,
+            fontsize=6.9,
+            ha="center",
+            va="center",
+            linespacing=1.45,
+            bbox={
+                "boxstyle": "round,pad=0.32",
+                "fc": "#FBEBCB",
+                "ec": "#8A6D1D",
+                "alpha": 0.97,
+            },
+        )
+
+        if state.get("show_fill_in"):
+            active = state.get("active_elimination_variable") or "—"
+            fill_count = len(state.get("fill_edges", []))
+            fill_text = (
+                f"eliminando: {active}\n"
+                f"fill-in acumulado: {fill_count}\n"
+                f"orden bueno/malo: "
+                f"{metrics.get('good_fill_count', 0)} / "
+                f"{metrics.get('bad_fill_count', 0)}"
+            )
+        else:
+            fill_text = (
+                "bloques J: "
+                f"{metrics.get('block_jacobian_nnz', 0)}/"
+                f"{metrics.get('block_jacobian_total', 0)}\n"
+                "bloques H: "
+                f"{metrics.get('block_hessian_nnz', 0)}/"
+                f"{metrics.get('block_hessian_total', 0)}"
+            )
+
+        ax.text(
+            0.50,
+            0.085,
+            fill_text,
+            fontsize=6.7,
+            fontweight="bold",
+            ha="center",
+            va="center",
+            color="#5A316B" if state.get("show_fill_in") else "#444444",
+        )
+
+        if state.get("show_connections"):
+            labels = [
+                ("GTSAM", "#B7D7F0", "#1F4F73"),
+                ("g2o", "#D8C4E8", "#5A316B"),
+                ("Ceres", "#FBE5A6", "#8A6D1D"),
+                ("SLAM grande", "#B7E4C7", "#2E8B57"),
+            ]
+            positions = [0.03, 0.275, 0.52, 0.765]
+            for label, face, edge in labels:
+                pass
+            for (label, face, edge), x in zip(labels, positions):
+                rectangle = Rectangle(
+                    (x, 0.005),
+                    0.205,
+                    0.042,
+                    facecolor=face,
+                    edgecolor=edge,
+                    linewidth=1.0,
+                )
+                ax.add_patch(rectangle)
+                ax.text(
+                    x + 0.1025,
+                    0.026,
+                    label,
+                    fontsize=5.8,
+                    fontweight="bold",
+                    ha="center",
+                    va="center",
+                )
+
+        phase_labels = {
+            "introduction": "localidad de los factores",
+            "poses": "vector global de poses",
+            "prior": "factor unario",
+            "factor": "jacobiano local",
+            "jacobian": "ensamblaje de J",
+            "normal_equations": "ecuaciones normales",
+            "assembly": "contribuciones a H",
+            "gauge": "rango y anclaje",
+            "good_elimination": "orden favorable",
+            "bad_elimination": "orden desfavorable",
+            "connections": "bibliotecas de optimización",
+            "summary": "resumen final",
+        }
+        ax.text(
+            0.50,
+            0.615,
+            phase_labels.get(phase, phase),
+            fontsize=7.1,
+            fontweight="bold",
+            ha="center",
+            va="center",
+            color="#7A1D1D",
+        )
+
+    @staticmethod
+    def _dibujar_orientacion_pose_dispersa(ax, x, y, theta, color):
+        longitud = 0.34
+        ax.arrow(
+            x,
+            y,
+            longitud * cos(theta),
+            longitud * sin(theta),
+            width=0.018,
+            head_width=0.11,
+            head_length=0.12,
+            length_includes_head=True,
+            color=color,
+            zorder=36,
+        )
+
+    def _dibujar_grafo_matrices_slam(self, ax, state):
+        """Dibuja poses, factores, cierres y aristas de fill-in."""
+
+        ax.clear()
+        ax.axis("off")
+        ax.set_aspect("equal", adjustable="box")
+        ax.set_title(
+            "Pose graph y dependencias locales",
+            fontsize=11.2,
+            fontweight="bold",
+        )
+
+        poses = dict(state.get("poses", {}))
+        variable_names = list(state.get("variable_names", []))
+        factors = list(state.get("factors", []))
+        visible_poses = min(
+            int(state.get("visible_poses", 0)),
+            len(variable_names),
+        )
+        visible_factors = min(
+            int(state.get("visible_factors", 0)),
+            len(factors),
+        )
+        active_factor = state.get("active_factor")
+        eliminated = set(state.get("eliminated_variables", []))
+        active_elimination = state.get("active_elimination_variable")
+
+        coordinates = {
+            name: (poses[name][0], poses[name][1])
+            for name in variable_names
+            if name in poses
+        }
+
+        if coordinates:
+            xs = [value[0] for value in coordinates.values()]
+            ys = [value[1] for value in coordinates.values()]
+            ax.set_xlim(min(xs) - 1.1, max(xs) + 1.1)
+            ax.set_ylim(min(ys) - 0.9, max(ys) + 0.9)
+
+        visible_names = set(variable_names[:visible_poses])
+
+        for factor in factors[:visible_factors]:
+            name = factor.get("name")
+            variables = list(factor.get("variables", []))
+            factor_type = factor.get("type")
+
+            if name == "prior_x0":
+                if "x0" not in visible_names:
+                    continue
+                x0, y0 = coordinates["x0"]
+                prior_position = (x0 - 0.72, y0 - 0.58)
+                ax.plot(
+                    [prior_position[0], x0],
+                    [prior_position[1], y0],
+                    color="#C62828" if name == active_factor else "#E45756",
+                    linewidth=3.5 if name == active_factor else 2.4,
+                    zorder=17,
+                )
+                rectangle = Rectangle(
+                    (prior_position[0] - 0.23, prior_position[1] - 0.15),
+                    0.46,
+                    0.30,
+                    facecolor="#F6B4B4",
+                    edgecolor="#7A1D1D",
+                    linewidth=2.3 if name == active_factor else 1.4,
+                    zorder=26,
+                )
+                ax.add_patch(rectangle)
+                ax.text(
+                    prior_position[0],
+                    prior_position[1],
+                    "prior",
+                    fontsize=7.2,
+                    fontweight="bold",
+                    ha="center",
+                    va="center",
+                    zorder=30,
+                )
+                continue
+
+            if len(variables) != 2 or not set(variables).issubset(visible_names):
+                continue
+
+            origin, target = variables
+            x1, y1 = coordinates[origin]
+            x2, y2 = coordinates[target]
+
+            if factor_type == "loop_closure":
+                color = "#8E5EA2"
+                line_style = "dashed"
+                line_width = 2.8
+            else:
+                color = "#2E8B57"
+                line_style = "solid"
+                line_width = 2.4
+
+            if name == active_factor:
+                color = "#E45756"
+                line_width = 4.2
+
+            ax.plot(
+                [x1, x2],
+                [y1, y2],
+                color=color,
+                linewidth=line_width,
+                linestyle=line_style,
+                zorder=15,
+            )
+            ax.text(
+                (x1 + x2) / 2,
+                (y1 + y2) / 2 + 0.10,
+                name,
+                fontsize=6.1,
+                fontweight="bold" if name == active_factor else "normal",
+                ha="center",
+                va="center",
+                color=color,
+                bbox={
+                    "boxstyle": "round,pad=0.13",
+                    "fc": "white",
+                    "ec": "none",
+                    "alpha": 0.88,
+                },
+                zorder=24,
+            )
+
+        for origin, target in state.get("fill_edges", []):
+            if origin not in coordinates or target not in coordinates:
+                continue
+            x1, y1 = coordinates[origin]
+            x2, y2 = coordinates[target]
+            ax.plot(
+                [x1, x2],
+                [y1, y2],
+                color="#F28E2B",
+                linewidth=2.7,
+                linestyle="dotted",
+                alpha=0.95,
+                zorder=19,
+            )
+
+        for name in variable_names[:visible_poses]:
+            x, y = coordinates[name]
+
+            if name == active_elimination:
+                face = "#E45756"
+                edge = "#7A1D1D"
+                size = 980
+            elif name in eliminated:
+                face = "#D9D9D9"
+                edge = "#888888"
+                size = 720
+            elif name == "x0" and visible_factors >= 1:
+                face = "#F6C85F"
+                edge = "#8A6D1D"
+                size = 850
+            else:
+                face = "#4C9ED9"
+                edge = "#1F4F73"
+                size = 820
+
+            collection = nx.draw_networkx_nodes(
+                nx.Graph([(name, name)]),
+                {name: (x, y)},
+                nodelist=[name],
+                node_size=size,
+                node_color=face,
+                edgecolors=edge,
+                linewidths=2.2 if name == active_elimination else 1.5,
+                ax=ax,
+            )
+            collection.set_zorder(28)
+            ax.text(
+                x,
+                y,
+                name,
+                fontsize=9.0,
+                fontweight="bold",
+                ha="center",
+                va="center",
+                zorder=34,
+            )
+            self._dibujar_orientacion_pose_dispersa(
+                ax,
+                x,
+                y,
+                poses[name][2],
+                edge,
+            )
+
+        ax.text(
+            0.50,
+            0.015,
+            state.get("message", ""),
+            transform=ax.transAxes,
+            fontsize=8.4,
+            ha="center",
+            va="bottom",
+            bbox={
+                "boxstyle": "round,pad=0.36",
+                "fc": "white",
+                "ec": "#777777",
+                "alpha": 0.96,
+            },
+            zorder=50,
+        )
+
+        legend_handles = [
+            Line2D([0], [0], color="#2E8B57", linewidth=2.5, label="odometría"),
+            Line2D([0], [0], color="#8E5EA2", linewidth=2.5, linestyle="dashed", label="cierre"),
+            Line2D([0], [0], color="#E45756", linewidth=2.5, label="prior / activo"),
+            Line2D([0], [0], color="#F28E2B", linewidth=2.5, linestyle="dotted", label="fill-in"),
+        ]
+        ax.legend(
+            handles=legend_handles,
+            loc="upper left",
+            fontsize=6.8,
+            framealpha=0.95,
+            ncol=2,
+        )
+
+    @staticmethod
+    def _dibujar_rejilla_bloques(ax, rows, columns, block_size=3):
+        for value in range(0, rows + 1, block_size):
+            ax.axhline(value - 0.5, color="#777777", linewidth=0.55, alpha=0.65)
+        for value in range(0, columns + 1, block_size):
+            ax.axvline(value - 0.5, color="#777777", linewidth=0.55, alpha=0.65)
+
+    def _dibujar_jacobiano_disperso(self, ax, state):
+        """Dibuja el patrón escalar de J y resalta los bloques activos."""
+
+        ax.clear()
+        ax.set_title(
+            "Jacobiano global J · filas=factores, columnas=poses",
+            fontsize=9.8,
+            fontweight="bold",
+        )
+
+        pattern = np.asarray(state.get("jacobian_pattern", []), dtype=bool)
+        factor_names = list(state.get("factor_names", []))
+        variable_names = list(state.get("variable_names", []))
+
+        if not state.get("show_jacobian") or pattern.size == 0:
+            ax.axis("off")
+            ax.text(
+                0.50,
+                0.52,
+                "El patrón de J aparecerá\nal añadir los factores.",
+                transform=ax.transAxes,
+                fontsize=8.5,
+                ha="center",
+                va="center",
+                color="#555555",
+                bbox={
+                    "boxstyle": "round,pad=0.40",
+                    "fc": "white",
+                    "ec": "#999999",
+                },
+            )
+            return
+
+        visible_factors = min(
+            int(state.get("visible_factors", 0)),
+            len(factor_names),
+        )
+        visible_rows = 3 * visible_factors
+        shown = np.zeros_like(pattern)
+        shown[:visible_rows, :] = pattern[:visible_rows, :]
+
+        ax.imshow(
+            shown,
+            cmap="Greys",
+            interpolation="nearest",
+            aspect="auto",
+            vmin=0,
+            vmax=1,
+        )
+
+        if state.get("show_block_grid"):
+            self._dibujar_rejilla_bloques(
+                ax,
+                shown.shape[0],
+                shown.shape[1],
+                block_size=3,
+            )
+
+        for factor_index, variable_index in state.get("active_j_blocks", []):
+            rectangle = Rectangle(
+                (3 * variable_index - 0.5, 3 * factor_index - 0.5),
+                3,
+                3,
+                fill=False,
+                edgecolor="#E45756",
+                linewidth=2.2,
+            )
+            ax.add_patch(rectangle)
+
+        ax.set_xticks(
+            [3 * index + 1 for index in range(len(variable_names))]
+        )
+        ax.set_xticklabels(variable_names, fontsize=6.8)
+        ax.set_yticks(
+            [3 * index + 1 for index in range(len(factor_names))]
+        )
+        ax.set_yticklabels(factor_names, fontsize=5.8)
+        ax.tick_params(length=0)
+        ax.set_xlabel("bloques de variables", fontsize=7.0)
+        ax.set_ylabel("bloques de residuos", fontsize=7.0)
+
+        metrics = state.get("metrics", {})
+        ax.text(
+            0.99,
+            0.02,
+            (
+                f"forma {tuple(metrics.get('jacobian_shape', []))} · "
+                f"nnz {metrics.get('jacobian_nnz', 0)} · "
+                f"densidad "
+                f"{self._formatear_porcentaje_dispersion(metrics.get('jacobian_density', 0.0))}"
+            ),
+            transform=ax.transAxes,
+            fontsize=6.4,
+            ha="right",
+            va="bottom",
+            color="#1F4F73",
+            bbox={
+                "boxstyle": "round,pad=0.20",
+                "fc": "white",
+                "ec": "#7A9CB8",
+                "alpha": 0.94,
+            },
+        )
+
+    def _dibujar_hessiana_dispersa(self, ax, state):
+        """Dibuja H, bloques activos y enlaces simbólicos de fill-in."""
+
+        ax.clear()
+        ax.set_title(
+            r"Hessiana aproximada $H=J^T\Omega J$",
+            fontsize=9.8,
+            fontweight="bold",
+        )
+
+        pattern = np.asarray(state.get("hessian_pattern", []), dtype=bool)
+        variable_names = list(state.get("variable_names", []))
+
+        if not state.get("show_hessian") or pattern.size == 0:
+            ax.axis("off")
+            ax.text(
+                0.50,
+                0.52,
+                "H aparecerá al formar\nlas ecuaciones normales.",
+                transform=ax.transAxes,
+                fontsize=8.5,
+                ha="center",
+                va="center",
+                color="#555555",
+                bbox={
+                    "boxstyle": "round,pad=0.40",
+                    "fc": "white",
+                    "ec": "#999999",
+                },
+            )
+            return
+
+        shown = pattern.astype(float)
+
+        for origin, target in state.get("fill_edges", []):
+            if origin not in variable_names or target not in variable_names:
+                continue
+            i = variable_names.index(origin)
+            j = variable_names.index(target)
+            shown[3 * i : 3 * i + 3, 3 * j : 3 * j + 3] = 0.55
+            shown[3 * j : 3 * j + 3, 3 * i : 3 * i + 3] = 0.55
+
+        ax.imshow(
+            shown,
+            cmap="Purples",
+            interpolation="nearest",
+            aspect="equal",
+            vmin=0,
+            vmax=1,
+        )
+
+        if state.get("show_block_grid"):
+            self._dibujar_rejilla_bloques(
+                ax,
+                shown.shape[0],
+                shown.shape[1],
+                block_size=3,
+            )
+
+        for row_block, column_block in state.get("active_h_blocks", []):
+            rectangle = Rectangle(
+                (3 * column_block - 0.5, 3 * row_block - 0.5),
+                3,
+                3,
+                fill=False,
+                edgecolor="#E45756",
+                linewidth=2.2,
+            )
+            ax.add_patch(rectangle)
+
+        ticks = [3 * index + 1 for index in range(len(variable_names))]
+        ax.set_xticks(ticks)
+        ax.set_yticks(ticks)
+        ax.set_xticklabels(variable_names, fontsize=6.8)
+        ax.set_yticklabels(variable_names, fontsize=6.8)
+        ax.tick_params(length=0)
+        ax.set_xlabel("variables", fontsize=7.0)
+        ax.set_ylabel("variables", fontsize=7.0)
+
+        metrics = state.get("metrics", {})
+        extra = ""
+        if state.get("show_fill_in"):
+            extra = f" · fill-in {len(state.get('fill_edges', []))}"
+
+        ax.text(
+            0.99,
+            0.02,
+            (
+                f"forma {tuple(metrics.get('hessian_shape', []))} · "
+                f"nnz {metrics.get('hessian_nnz', 0)} · "
+                f"densidad "
+                f"{self._formatear_porcentaje_dispersion(metrics.get('hessian_density', 0.0))}"
+                + extra
+            ),
+            transform=ax.transAxes,
+            fontsize=6.4,
+            ha="right",
+            va="bottom",
+            color="#5A316B",
+            bbox={
+                "boxstyle": "round,pad=0.20",
+                "fc": "white",
+                "ec": "#8E5EA2",
+                "alpha": 0.94,
+            },
+        )
+
+    def _dibujar_estado_matrices_slam(
+        self,
+        info_ax,
+        graph_ax,
+        jacobian_ax,
+        hessian_ax,
+        state,
+    ):
+        """Dibuja un fotograma completo del apartado 5.7."""
+
+        self._dibujar_info_matrices_slam(info_ax, state)
+        self._dibujar_grafo_matrices_slam(graph_ax, state)
+        self._dibujar_jacobiano_disperso(jacobian_ax, state)
+        self._dibujar_hessiana_dispersa(hessian_ax, state)
+
+    def animate_sparse_slam_matrices(
+        self,
+        graph,
+        states,
+        title="Jacobianos y estructura dispersa en SLAM",
+        final_image_path=None,
+        repeat=False,
+    ):
+        """
+        Anima la relación entre un pose graph y sus matrices dispersas.
+
+        La imagen final muestra:
+        - pose graph con prior, odometría y cierres de ciclo;
+        - patrón escalar y por bloques del jacobiano;
+        - Hessiana aproximada simétrica;
+        - métricas de densidad, rango y fill-in;
+        - conexión con GTSAM, g2o, Ceres y SLAM a gran escala.
+        """
+
+        if not states:
+            raise ValueError(
+                "La lista de estados de matrices dispersas no puede estar vacía."
+            )
+        if graph is None or graph.number_of_nodes() == 0:
+            raise ValueError("El pose graph no puede estar vacío.")
+
+        (
+            fig,
+            info_ax,
+            graph_ax,
+            jacobian_ax,
+            hessian_ax,
+        ) = self._preparar_figura_matrices_slam(title)
+
+        if final_image_path is not None:
+            self._dibujar_estado_matrices_slam(
+                info_ax=info_ax,
+                graph_ax=graph_ax,
+                jacobian_ax=jacobian_ax,
+                hessian_ax=hessian_ax,
+                state=states[-1],
+            )
+
+            final_image_path = Path(final_image_path)
+            final_image_path.parent.mkdir(parents=True, exist_ok=True)
+            fig.savefig(
+                final_image_path,
+                dpi=200,
+                bbox_inches="tight",
+            )
+            print(f"Imagen final guardada en: {final_image_path}")
+
+        def init():
+            self._dibujar_estado_matrices_slam(
+                info_ax=info_ax,
+                graph_ax=graph_ax,
+                jacobian_ax=jacobian_ax,
+                hessian_ax=hessian_ax,
+                state=states[0],
+            )
+            return []
+
+        def update(frame_index):
+            self._dibujar_estado_matrices_slam(
+                info_ax=info_ax,
+                graph_ax=graph_ax,
+                jacobian_ax=jacobian_ax,
+                hessian_ax=hessian_ax,
+                state=states[frame_index],
+            )
+            return []
+
+        self.animation = FuncAnimation(
+            fig,
+            update,
+            frames=len(states),
+            init_func=init,
+            interval=self.interval,
+            repeat=repeat,
+            blit=False,
+        )
+
+        plt.show()
         return self.animation
