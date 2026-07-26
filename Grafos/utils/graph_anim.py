@@ -29,6 +29,7 @@ class GraphAnimator:
     - jacobianos, Hessianas y estructura dispersa en pose graphs,
     - introducción a SLAM mediante trayectoria real y deriva de odometría,
     - Pose Graph SLAM 2D con prior, odometría, cierre y optimización,
+    - loop closure con reconocimiento, verificación geométrica y robustez,
     - caminos mínimos con Bellman-Ford,
     - caminos mínimos con Floyd-Warshall,
     - árboles de expansión mínima con Prim y Kruskal,
@@ -20885,5 +20886,932 @@ class GraphAnimator:
             blit=False,
         )
 
+        plt.show()
+        return self.animation
+    # ------------------------------------------------------------------
+    # Elementos específicos de loop closure
+    # ------------------------------------------------------------------
+
+    def _preparar_figura_loop_closure(self, title):
+        """Crea la figura de detección, arista de loop y corrección global."""
+
+        fig = plt.figure(figsize=self.figsize)
+        grid = fig.add_gridspec(
+            2,
+            4,
+            width_ratios=[1.55, 2.75, 2.75, 2.75],
+            height_ratios=[4.65, 1.55],
+            wspace=0.11,
+            hspace=0.15,
+        )
+
+        info_ax = fig.add_subplot(grid[:, 0])
+        drift_ax = fig.add_subplot(grid[0, 1])
+        detection_ax = fig.add_subplot(grid[0, 2])
+        corrected_ax = fig.add_subplot(grid[0, 3])
+        history_ax = fig.add_subplot(grid[1, 1:])
+
+        fig.suptitle(title, fontsize=15, fontweight="bold")
+        fig.subplots_adjust(
+            left=0.022,
+            right=0.988,
+            top=0.925,
+            bottom=0.055,
+        )
+        return fig, info_ax, drift_ax, detection_ax, corrected_ax, history_ax
+
+    @staticmethod
+    def _limites_loop_closure(result):
+        """Calcula límites comunes para las trayectorias del ejemplo."""
+
+        trajectories = [
+            np.asarray(result["true_trajectory"], dtype=float),
+            np.asarray(result["initial_trajectory"], dtype=float),
+            np.asarray(result["optimized_trajectory"], dtype=float),
+        ]
+        points = np.vstack([trajectory[:, :2] for trajectory in trajectories])
+        minimum = np.min(points, axis=0)
+        maximum = np.max(points, axis=0)
+        span = np.maximum(maximum - minimum, 1.0)
+        margin = 0.10 * span + np.array([0.45, 0.45])
+        return (
+            minimum[0] - margin[0],
+            maximum[0] + margin[0],
+            minimum[1] - margin[1],
+            maximum[1] + margin[1],
+        )
+
+    def _dibujar_leyenda_loop_closure(self, ax):
+        """Dibuja la leyenda del apartado de cierre de bucle."""
+
+        elements = [
+            Line2D(
+                [0], [0], color="#777777", linewidth=1.9,
+                linestyle="dashed", label="Trayectoria real",
+            ),
+            Line2D(
+                [0], [0], color="#F28E2B", linewidth=2.7,
+                label="Odometría con deriva",
+            ),
+            Line2D(
+                [0], [0], color="#4C9ED9", linewidth=2.7,
+                label="Trayectoria corregida",
+            ),
+            Line2D(
+                [0], [0], color="#2E8B57", linewidth=2.3,
+                label="Aristas de odometría",
+            ),
+            Line2D(
+                [0], [0], color="#8E5EA2", linewidth=2.7,
+                linestyle="dashed", label="Loop closure aceptado",
+            ),
+            Line2D(
+                [0], [0], color="#C62828", linewidth=2.4,
+                linestyle="dotted", label="Candidato rechazado",
+            ),
+            Line2D(
+                [0], [0], marker="s", color="none",
+                markerfacecolor="#E45756", markeredgecolor="#7A1D1D",
+                markersize=8, label="Prior sobre x0",
+            ),
+        ]
+        ax.legend(
+            handles=elements,
+            loc="lower center",
+            bbox_to_anchor=(0.5, 0.015),
+            fontsize=6.3,
+            framealpha=0.97,
+            ncol=2,
+            columnspacing=0.65,
+            handlelength=2.2,
+            borderpad=0.50,
+        )
+
+    def _configurar_eje_loop_closure(self, ax, result, title):
+        """Configura un panel geométrico con límites comunes."""
+
+        ax.clear()
+        ax.set_title(title, fontsize=10.7, fontweight="bold")
+        ax.set_xlabel("x [m]", fontsize=7.5)
+        ax.set_ylabel("y [m]", fontsize=7.5)
+        ax.grid(True, alpha=0.22)
+        ax.set_aspect("equal", adjustable="box")
+        limits = self._limites_loop_closure(result)
+        ax.set_xlim(limits[0], limits[1])
+        ax.set_ylim(limits[2], limits[3])
+
+    def _dibujar_trayectoria_loop(
+        self,
+        ax,
+        trajectory,
+        color,
+        node_face,
+        node_edge,
+        visible_pose_count,
+        visible_odometry_count,
+        draw_labels=True,
+        alpha=1.0,
+    ):
+        """Dibuja poses, orientaciones y restricciones consecutivas."""
+
+        trajectory = np.asarray(trajectory, dtype=float)
+        visible_pose_count = int(
+            np.clip(visible_pose_count, 0, len(trajectory))
+        )
+        visible_odometry_count = int(
+            np.clip(visible_odometry_count, 0, len(trajectory) - 1)
+        )
+        if visible_pose_count <= 0:
+            return
+
+        ax.plot(
+            trajectory[:visible_pose_count, 0],
+            trajectory[:visible_pose_count, 1],
+            color=color,
+            linewidth=2.45,
+            alpha=0.92 * alpha,
+            zorder=9,
+        )
+        for index in range(visible_odometry_count):
+            if index + 1 >= visible_pose_count:
+                break
+            p0 = trajectory[index, :2]
+            p1 = trajectory[index + 1, :2]
+            ax.plot(
+                [p0[0], p1[0]],
+                [p0[1], p1[1]],
+                color="#2E8B57",
+                linewidth=1.45,
+                alpha=0.65 * alpha,
+                zorder=10,
+            )
+
+        ax.scatter(
+            trajectory[:visible_pose_count, 0],
+            trajectory[:visible_pose_count, 1],
+            s=31,
+            color=node_face,
+            edgecolors=node_edge,
+            linewidths=1.0,
+            alpha=alpha,
+            zorder=20,
+        )
+
+        if not draw_labels:
+            return
+
+        indices = set(range(0, visible_pose_count, 4))
+        indices.update({0, visible_pose_count - 1})
+        for index in sorted(indices):
+            x, y, theta = trajectory[index]
+            ax.text(
+                x,
+                y + 0.20,
+                f"x{index}",
+                fontsize=5.9,
+                fontweight="bold",
+                ha="center",
+                va="bottom",
+                color="#222222",
+                zorder=30,
+            )
+            length = 0.24
+            ax.arrow(
+                x,
+                y,
+                length * np.cos(theta),
+                length * np.sin(theta),
+                width=0.008,
+                head_width=0.070,
+                head_length=0.075,
+                color=node_edge,
+                length_includes_head=True,
+                alpha=0.82 * alpha,
+                zorder=24,
+            )
+
+    def _dibujar_prior_loop(self, ax, trajectory):
+        """Marca el prior sobre la primera pose."""
+
+        x0, y0 = np.asarray(trajectory, dtype=float)[0, :2]
+        ax.scatter(
+            [x0], [y0], s=105, marker="s", color="#E45756",
+            edgecolors="#7A1D1D", linewidths=1.9, zorder=36,
+        )
+        ax.text(
+            x0, y0 - 0.32, "prior", fontsize=6.5, fontweight="bold",
+            ha="center", va="top", color="#7A1D1D", zorder=37,
+        )
+
+    def _dibujar_arista_loop(self, ax, trajectory, label="loop x24 → x0"):
+        """Dibuja la nueva restricción de largo alcance."""
+
+        trajectory = np.asarray(trajectory, dtype=float)
+        start = trajectory[-1, :2]
+        end = trajectory[0, :2]
+        distance = float(np.linalg.norm(start - end))
+        if distance < 0.20:
+            center = 0.5 * (start + end)
+            loop_arc = Arc(
+                center,
+                width=0.95,
+                height=0.72,
+                angle=0.0,
+                theta1=25,
+                theta2=335,
+                linewidth=2.7,
+                linestyle="dashed",
+                color="#8E5EA2",
+                zorder=34,
+            )
+            ax.add_patch(loop_arc)
+            arrow = FancyArrowPatch(
+                (center[0] + 0.42, center[1] - 0.16),
+                (center[0] + 0.46, center[1] + 0.02),
+                arrowstyle="-|>",
+                mutation_scale=13,
+                linewidth=2.2,
+                color="#8E5EA2",
+                zorder=35,
+            )
+            ax.add_patch(arrow)
+            middle = center
+            label_y = center[1] - 0.54
+        else:
+            arrow = FancyArrowPatch(
+                start,
+                end,
+                arrowstyle="-|>",
+                mutation_scale=14,
+                linewidth=2.7,
+                linestyle="dashed",
+                color="#8E5EA2",
+                connectionstyle="arc3,rad=0.28",
+                shrinkA=7,
+                shrinkB=8,
+                zorder=34,
+            )
+            ax.add_patch(arrow)
+            middle = 0.5 * (start + end)
+            label_y = middle[1] - 0.43
+        ax.text(
+            middle[0],
+            label_y,
+            label,
+            fontsize=6.4,
+            fontweight="bold",
+            ha="center",
+            va="top",
+            color="#5A316B",
+            bbox={
+                "boxstyle": "round,pad=0.20",
+                "fc": "white",
+                "ec": "#8E5EA2",
+                "alpha": 0.94,
+            },
+            zorder=36,
+        )
+
+    def _dibujar_panel_deriva_loop(self, ax, result, state):
+        """Dibuja la trayectoria odométrica antes de reconocer el lugar."""
+
+        self._configurar_eje_loop_closure(
+            ax, result, "1. Antes: odometría con deriva"
+        )
+        true_trajectory = np.asarray(result["true_trajectory"], dtype=float)
+        initial = np.asarray(result["initial_trajectory"], dtype=float)
+        visible_pose_count = int(
+            np.clip(state.get("visible_pose_count", len(initial)), 0, len(initial))
+        )
+        visible_odometry_count = int(
+            np.clip(
+                state.get("visible_odometry_count", len(initial) - 1),
+                0,
+                len(initial) - 1,
+            )
+        )
+
+        if state.get("show_true", True) and visible_pose_count > 0:
+            ax.plot(
+                true_trajectory[:visible_pose_count, 0],
+                true_trajectory[:visible_pose_count, 1],
+                color="#777777",
+                linewidth=1.7,
+                linestyle="dashed",
+                alpha=0.78,
+                zorder=4,
+            )
+        if state.get("show_initial"):
+            self._dibujar_trayectoria_loop(
+                ax,
+                initial,
+                "#F28E2B",
+                "#F6C85F",
+                "#8A4B08",
+                visible_pose_count,
+                visible_odometry_count,
+            )
+        if state.get("show_prior") and visible_pose_count > 0:
+            self._dibujar_prior_loop(ax, initial)
+
+        if visible_pose_count == len(initial):
+            ax.plot(
+                [initial[-1, 0], initial[0, 0]],
+                [initial[-1, 1], initial[0, 1]],
+                color="#C62828",
+                linewidth=2.0,
+                linestyle=":",
+                zorder=31,
+            )
+            ax.text(
+                0.02,
+                0.02,
+                (
+                    f"RMSE={result['initial_metrics']['position_rmse']:.3f} m\n"
+                    f"cierre={result['initial_closure']['translation']:.3f} m"
+                ),
+                transform=ax.transAxes,
+                fontsize=6.8,
+                ha="left",
+                va="bottom",
+                bbox={
+                    "boxstyle": "round,pad=0.28",
+                    "fc": "white",
+                    "ec": "#777777",
+                    "alpha": 0.95,
+                },
+                zorder=50,
+            )
+
+    def _dibujar_panel_deteccion_loop(self, ax, result, state):
+        """Dibuja candidatos visuales, verificación y arista aceptada."""
+
+        self._configurar_eje_loop_closure(
+            ax, result, "2. Detección y verificación"
+        )
+        initial = np.asarray(result["initial_trajectory"], dtype=float)
+        true_trajectory = np.asarray(result["true_trajectory"], dtype=float)
+        numero_poses = len(initial)
+
+        ax.plot(
+            initial[:, 0], initial[:, 1], color="#C7C7C7",
+            linewidth=1.6, alpha=0.72, zorder=5,
+        )
+        ax.scatter(
+            initial[:, 0], initial[:, 1], s=20, color="#E5E5E5",
+            edgecolors="#888888", linewidths=0.8, zorder=12,
+        )
+
+        current_index = numero_poses - 1
+        current = initial[current_index, :2]
+        ax.scatter(
+            [current[0]], [current[1]], s=105, marker="*",
+            color="#E45756", edgecolors="#7A1D1D", linewidths=1.4,
+            zorder=32,
+        )
+        ax.text(
+            current[0], current[1] + 0.28, f"actual x{current_index}",
+            fontsize=6.5, fontweight="bold", ha="center", va="bottom",
+            color="#7A1D1D", zorder=34,
+        )
+
+        all_evaluations = list(result["detection"]["evaluations"])
+        accepted_index = result["detection"]["accepted"]["candidate_index"]
+        false_index = result["detection"]["false_candidate"]["candidate_index"]
+        evaluations = [
+            evaluation
+            for evaluation in all_evaluations
+            if evaluation["candidate_index"] in {accepted_index, false_index}
+        ]
+        active_candidate = state.get("active_candidate")
+        show_candidates = state.get("show_candidates")
+
+        if show_candidates:
+            for evaluation in evaluations:
+                index = evaluation["candidate_index"]
+                point = initial[index, :2]
+                is_active = index == active_candidate
+                is_accepted = evaluation["accepted"]
+
+                if is_accepted:
+                    color = "#8E5EA2"
+                    marker = "o"
+                else:
+                    color = "#C62828"
+                    marker = "X"
+
+                ax.scatter(
+                    [point[0]], [point[1]],
+                    s=95 if is_active else 62,
+                    marker=marker,
+                    color=color,
+                    edgecolors="#333333",
+                    linewidths=1.1,
+                    zorder=30,
+                )
+                ax.plot(
+                    [current[0], point[0]],
+                    [current[1], point[1]],
+                    color=color,
+                    linewidth=2.4 if is_active else 1.2,
+                    linestyle="--" if is_accepted else ":",
+                    alpha=0.95 if is_active else 0.45,
+                    zorder=24,
+                )
+                ax.text(
+                    point[0], point[1] - 0.28,
+                    f"x{index}  s={evaluation['similarity']:.3f}",
+                    fontsize=5.8, fontweight="bold" if is_active else "normal",
+                    ha="center", va="top", color=color, zorder=35,
+                )
+
+        if state.get("show_loop"):
+            self._dibujar_arista_loop(ax, initial)
+
+        if state.get("show_database") and not show_candidates:
+            ax.text(
+                0.50,
+                0.50,
+                "Consulta de la base\nde lugares anteriores",
+                transform=ax.transAxes,
+                fontsize=10,
+                fontweight="bold",
+                ha="center",
+                va="center",
+                color="#555555",
+                bbox={
+                    "boxstyle": "round,pad=0.50",
+                    "fc": "white",
+                    "ec": "#999999",
+                    "alpha": 0.96,
+                },
+                zorder=60,
+            )
+
+        if state.get("show_matches") and active_candidate is not None:
+            evaluation = next(
+                item
+                for item in evaluations
+                if item["candidate_index"] == active_candidate
+            )
+            decision = "ACEPTADO" if evaluation["accepted"] else "RECHAZADO"
+            decision_color = "#2E8B57" if evaluation["accepted"] else "#C62828"
+            ax.text(
+                0.02,
+                0.02,
+                (
+                    f"candidato x{active_candidate}\n"
+                    f"similitud={evaluation['similarity']:.3f}\n"
+                    f"inliers={evaluation['inliers']}/"
+                    f"{evaluation['inliers'] + evaluation['outliers']}\n"
+                    f"RMSE geom.={evaluation['rmse']:.3f} m\n"
+                    f"{decision}"
+                ),
+                transform=ax.transAxes,
+                fontsize=6.8,
+                fontweight="bold",
+                ha="left",
+                va="bottom",
+                color=decision_color,
+                bbox={
+                    "boxstyle": "round,pad=0.30",
+                    "fc": "white",
+                    "ec": decision_color,
+                    "alpha": 0.96,
+                },
+                zorder=60,
+            )
+
+        # El lugar físico real se dibuja discretamente para recordar la revisita.
+        ax.scatter(
+            [true_trajectory[0, 0]], [true_trajectory[0, 1]],
+            s=35, facecolors="none", edgecolors="#777777",
+            linewidths=1.1, zorder=16,
+        )
+
+    def _dibujar_panel_corregido_loop(self, ax, result, state):
+        """Dibuja la trayectoria actual o la solución optimizada."""
+
+        self._configurar_eje_loop_closure(
+            ax, result, "3. Después: corrección global"
+        )
+        true_trajectory = np.asarray(result["true_trajectory"], dtype=float)
+        initial = np.asarray(result["initial_trajectory"], dtype=float)
+        current = state.get("current_poses")
+        if current is None:
+            current = initial
+        current = np.asarray(current, dtype=float)
+
+        ax.plot(
+            true_trajectory[:, 0], true_trajectory[:, 1],
+            color="#777777", linewidth=1.7, linestyle="dashed",
+            alpha=0.78, zorder=4,
+        )
+        ax.plot(
+            initial[:, 0], initial[:, 1],
+            color="#F28E2B", linewidth=1.5, alpha=0.28, zorder=5,
+        )
+
+        phase = state.get("phase", "")
+        show_current = state.get("show_current") or phase in {
+            "optimization", "robustness", "comparison", "summary"
+        }
+        if show_current:
+            self._dibujar_trayectoria_loop(
+                ax,
+                current,
+                "#4C9ED9",
+                "#B7D7F0",
+                "#1F4F73",
+                len(current),
+                len(current) - 1,
+            )
+            if state.get("show_prior"):
+                self._dibujar_prior_loop(ax, current)
+            if state.get("show_loop"):
+                self._dibujar_arista_loop(ax, current)
+
+            ax.text(
+                0.02,
+                0.02,
+                (
+                    f"coste={self._formatear_numero_pose_graph(state.get('cost'), 3)}\n"
+                    f"RMSE={self._formatear_numero_pose_graph(state.get('rmse'), 3)} m\n"
+                    f"cierre={self._formatear_numero_pose_graph(state.get('closure_error'), 3)} m"
+                ),
+                transform=ax.transAxes,
+                fontsize=6.8,
+                ha="left",
+                va="bottom",
+                bbox={
+                    "boxstyle": "round,pad=0.28",
+                    "fc": "white",
+                    "ec": "#777777",
+                    "alpha": 0.95,
+                },
+                zorder=50,
+            )
+        else:
+            ax.text(
+                0.50,
+                0.50,
+                "La trayectoria corregida\naparecerá después de\nañadir y optimizar el loop",
+                transform=ax.transAxes,
+                fontsize=10,
+                fontweight="bold",
+                ha="center",
+                va="center",
+                color="#666666",
+                bbox={
+                    "boxstyle": "round,pad=0.50",
+                    "fc": "white",
+                    "ec": "#999999",
+                    "alpha": 0.96,
+                },
+                zorder=70,
+            )
+
+    def _dibujar_info_loop_closure(self, ax, result, state):
+        """Dibuja explicación, detección, métricas y conexiones."""
+
+        ax.clear()
+        ax.axis("off")
+        ax.set_xlim(0, 1)
+        ax.set_ylim(0, 1)
+
+        accepted = result["detection"]["accepted"]
+        false_candidate = result["detection"]["false_candidate"]
+        initial_cost = float(result["initial_system"]["cost"])
+        final_cost = float(result["final_system"]["cost"])
+        initial_rmse = float(result["initial_metrics"]["position_rmse"])
+        final_rmse = float(result["final_metrics"]["position_rmse"])
+        initial_closure = float(result["initial_closure"]["translation"])
+        final_closure = float(result["final_closure"]["translation"])
+
+        ax.text(
+            0.50, 0.985, "Loop closure", fontsize=12.2,
+            fontweight="bold", ha="center", va="top",
+        )
+        ax.text(
+            0.50, 0.944,
+            "reconocer → verificar → añadir arista → optimizar",
+            fontsize=7.2, ha="center", va="top", color="#444444", wrap=True,
+        )
+
+        cards = [
+            (
+                "Lugar aceptado",
+                (
+                    f"x{accepted['candidate_index']} · s={accepted['similarity']:.3f}\n"
+                    f"{accepted['inliers']} inliers · {accepted['rmse']:.3f} m"
+                ),
+                "#D5E8D4",
+            ),
+            (
+                "Alias rechazado",
+                (
+                    f"x{false_candidate['candidate_index']} · s={false_candidate['similarity']:.3f}\n"
+                    f"{false_candidate['inliers']} inliers"
+                ),
+                "#F6D5D5",
+            ),
+            (
+                "Coste",
+                f"{initial_cost:.3f}\n→ {final_cost:.3f}",
+                "#E5E5E5",
+            ),
+            (
+                "RMSE",
+                f"{initial_rmse:.3f} m\n→ {final_rmse:.3f} m",
+                "#B7D7F0",
+            ),
+            (
+                "Error de cierre",
+                f"{initial_closure:.3f} m\n→ {final_closure:.3f} m",
+                "#E8D7F1",
+            ),
+        ]
+        y_positions = [0.835, 0.710, 0.585, 0.460, 0.335]
+        for (title, value, color), y in zip(cards, y_positions):
+            rectangle = Rectangle(
+                (0.09, y), 0.82, 0.095, facecolor=color,
+                edgecolor="#666666", linewidth=1.1,
+            )
+            ax.add_patch(rectangle)
+            ax.text(
+                0.14, y + 0.064, title, fontsize=7.2,
+                fontweight="bold", ha="left", va="center",
+            )
+            ax.text(
+                0.86, y + 0.040, value, fontsize=6.8,
+                ha="right", va="center", linespacing=1.30,
+            )
+
+        accepted_state = state.get("accepted")
+        if accepted_state is True:
+            decision = "aceptado"
+        elif accepted_state is False:
+            decision = "rechazado"
+        else:
+            decision = "—"
+
+        ax.text(
+            0.50,
+            0.265,
+            (
+                f"Iteración: {state.get('iteration', '—')}\n"
+                f"λ: {self._formatear_numero_pose_graph(state.get('damping'), 3)}\n"
+                f"||ΔX||: {self._formatear_numero_pose_graph(state.get('step_norm'), 4)}\n"
+                f"peso loop: {self._formatear_numero_pose_graph(state.get('loop_weight'), 3)}\n"
+                f"decisión: {decision}"
+            ),
+            fontsize=7.0,
+            ha="center",
+            va="top",
+            linespacing=1.36,
+            bbox={
+                "boxstyle": "round,pad=0.38",
+                "fc": "white",
+                "ec": "#888888",
+                "alpha": 0.97,
+            },
+        )
+
+        ax.text(
+            0.50,
+            0.125,
+            state.get("message", ""),
+            fontsize=7.2,
+            ha="center",
+            va="center",
+            wrap=True,
+            bbox={
+                "boxstyle": "round,pad=0.36",
+                "fc": "white",
+                "ec": "#777777",
+                "alpha": 0.97,
+            },
+        )
+
+        if state.get("show_connections"):
+            ax.text(
+                0.50,
+                0.072,
+                "ORB-SLAM3 · reconocimiento · asociación · robustez",
+                fontsize=6.3,
+                fontweight="bold",
+                ha="center",
+                va="center",
+                color="#333333",
+                wrap=True,
+            )
+
+        ax.text(
+            0.50,
+            0.012,
+            f"Estado {state.get('step', 1)} de {state.get('total_steps', 1)}",
+            fontsize=6.4,
+            ha="center",
+            va="bottom",
+            color="#555555",
+        )
+        self._dibujar_leyenda_loop_closure(ax)
+
+    def _dibujar_historial_loop_closure(self, ax, result, state):
+        """Dibuja coste, RMSE, cierre y peso robusto por iteración."""
+
+        ax.clear()
+        ax.grid(True, alpha=0.22)
+        ax.set_title(
+            "Optimización después del loop closure",
+            fontsize=10.2,
+            fontweight="bold",
+        )
+        ax.set_xlabel("Iteración", fontsize=7.5)
+
+        history = list(result["optimization"]["history"])
+        factor_name = result["loop_factor_name"]
+        costs = [float(result["initial_system"]["cost"])]
+        rmses = [float(result["initial_metrics"]["position_rmse"])]
+        closures = [float(result["initial_closure"]["translation"])]
+        weights = [
+            float(result["initial_system"]["robust_weights"].get(factor_name, 1.0))
+        ]
+        for entry in history:
+            costs.append(float(entry["cost_after"]))
+            rmses.append(float(entry["rmse_after"]))
+            closures.append(float(entry["closure_after"]))
+            weights.append(float(entry.get("loop_weight_after", 1.0)))
+
+        iteration = state.get("iteration")
+        if state.get("show_history"):
+            visible_count = len(costs) if iteration is None else min(
+                len(costs), int(iteration) + 1
+            )
+        else:
+            visible_count = 1
+
+        x_values = np.arange(visible_count)
+
+        def normalize(values):
+            values = np.asarray(values[:visible_count], dtype=float)
+            base = max(abs(float(values[0])), 1e-12)
+            return values / base
+
+        ax.plot(
+            x_values, normalize(costs), marker="o", linewidth=2.1,
+            markersize=4.2, color="#E45756", label="coste / inicial",
+        )
+        ax.plot(
+            x_values, normalize(rmses), marker="o", linewidth=1.9,
+            markersize=4.0, color="#4C9ED9", label="RMSE / inicial",
+        )
+        ax.plot(
+            x_values, normalize(closures), marker="o", linewidth=1.9,
+            markersize=4.0, color="#8E5EA2", label="cierre / inicial",
+        )
+        ax.plot(
+            x_values, np.asarray(weights[:visible_count]), marker="s",
+            linewidth=1.8, markersize=3.8, color="#2E8B57",
+            label="peso robusto del loop",
+        )
+        ax.axhline(1.0, color="#999999", linewidth=1.0, linestyle="dotted")
+        ax.set_ylim(bottom=0.0)
+        ax.set_xlim(-0.2, max(len(costs) - 0.8, 1.2))
+        ax.legend(loc="upper right", fontsize=6.8, ncol=4, framealpha=0.95)
+        ax.text(
+            0.01,
+            0.03,
+            "La arista de loop reduce la inconsistencia; Huber limita outliers extremos.",
+            transform=ax.transAxes,
+            fontsize=6.7,
+            ha="left",
+            va="bottom",
+            color="#444444",
+        )
+
+    def _dibujar_estado_loop_closure(
+        self,
+        info_ax,
+        drift_ax,
+        detection_ax,
+        corrected_ax,
+        history_ax,
+        result,
+        state,
+    ):
+        """Dibuja un estado completo de la demostración de loop closure."""
+
+        self._dibujar_info_loop_closure(info_ax, result, state)
+        self._dibujar_panel_deriva_loop(drift_ax, result, state)
+        self._dibujar_panel_deteccion_loop(detection_ax, result, state)
+        self._dibujar_panel_corregido_loop(corrected_ax, result, state)
+        self._dibujar_historial_loop_closure(history_ax, result, state)
+
+    def animate_loop_closure(
+        self,
+        result,
+        states,
+        title="Loop closure: detección y corrección",
+        final_image_path=None,
+        repeat=False,
+    ):
+        """
+        Anima el proceso completo de cierre de bucle.
+
+        La imagen final muestra:
+        - trayectoria odométrica con deriva;
+        - candidato verdadero y alias perceptual rechazado;
+        - arista de loop closure;
+        - trayectoria corregida;
+        - coste, RMSE, cierre y peso robusto.
+        """
+
+        if not states:
+            raise ValueError(
+                "La lista de estados de loop closure no puede estar vacía."
+            )
+        if result is None:
+            raise ValueError("El resultado de loop closure no puede ser nulo.")
+
+        required = {
+            "graph",
+            "graph_before_loop",
+            "true_trajectory",
+            "initial_trajectory",
+            "optimized_trajectory",
+            "detection",
+            "initial_system",
+            "final_system",
+            "initial_metrics",
+            "final_metrics",
+            "initial_closure",
+            "final_closure",
+            "optimization",
+            "loop_factor_name",
+        }
+        missing = required.difference(result)
+        if missing:
+            raise ValueError(
+                "Faltan datos del resultado: " + ", ".join(sorted(missing))
+            )
+
+        (
+            fig,
+            info_ax,
+            drift_ax,
+            detection_ax,
+            corrected_ax,
+            history_ax,
+        ) = self._preparar_figura_loop_closure(title)
+
+        if final_image_path is not None:
+            self._dibujar_estado_loop_closure(
+                info_ax=info_ax,
+                drift_ax=drift_ax,
+                detection_ax=detection_ax,
+                corrected_ax=corrected_ax,
+                history_ax=history_ax,
+                result=result,
+                state=states[-1],
+            )
+            final_image_path = Path(final_image_path)
+            final_image_path.parent.mkdir(parents=True, exist_ok=True)
+            fig.savefig(final_image_path, dpi=200, bbox_inches="tight")
+            print(f"Imagen final guardada en: {final_image_path}")
+
+        def init():
+            self._dibujar_estado_loop_closure(
+                info_ax=info_ax,
+                drift_ax=drift_ax,
+                detection_ax=detection_ax,
+                corrected_ax=corrected_ax,
+                history_ax=history_ax,
+                result=result,
+                state=states[0],
+            )
+            return []
+
+        def update(frame_index):
+            self._dibujar_estado_loop_closure(
+                info_ax=info_ax,
+                drift_ax=drift_ax,
+                detection_ax=detection_ax,
+                corrected_ax=corrected_ax,
+                history_ax=history_ax,
+                result=result,
+                state=states[frame_index],
+            )
+            return []
+
+        self.animation = FuncAnimation(
+            fig,
+            update,
+            frames=len(states),
+            init_func=init,
+            interval=self.interval,
+            repeat=repeat,
+            blit=False,
+        )
         plt.show()
         return self.animation
