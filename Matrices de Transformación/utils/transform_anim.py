@@ -6,7 +6,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 from matplotlib.animation import FFMpegWriter, FuncAnimation
 from matplotlib.lines import Line2D
-from matplotlib.patches import FancyArrowPatch
+from matplotlib.patches import FancyArrowPatch, Polygon
 
 
 class TransformAnimator:
@@ -17,12 +17,12 @@ class TransformAnimator:
     apartado deben calcular los puntos, vectores, frames y estados que desean
     mostrar y entregarlos al animador.
 
-    En esta primera versión se incluye una animación 2D genérica capaz de
-    representar:
+    La animación 2D genérica es capaz de representar:
     - sistemas de referencia cartesianos,
-    - puntos,
-    - vectores,
-    - segmentos auxiliares,
+    - puntos y vectores,
+    - segmentos, polilíneas y polígonos,
+    - cuadrículas deformadas calculadas por cada demo,
+    - textos y leyendas pedagógicas,
     - información numérica asociada a cada estado,
     - imagen final y vídeo WebM/MP4.
 
@@ -268,16 +268,21 @@ class TransformAnimator:
             zorder=45,
         )
 
-        ax.text(
-            position[0] + 0.14,
-            position[1] + 0.14,
-            name,
-            fontsize=11,
-            fontweight="bold",
-            color=color,
-            alpha=alpha,
-            zorder=50,
-        )
+        if name:
+            label_offset = self._vector_2d(
+                point.get("label_offset", (0.14, 0.14)),
+                "point.label_offset",
+            )
+            ax.text(
+                position[0] + label_offset[0],
+                position[1] + label_offset[1],
+                name,
+                fontsize=float(point.get("fontsize", 11)),
+                fontweight=point.get("fontweight", "bold"),
+                color=color,
+                alpha=alpha,
+                zorder=float(point.get("zorder", 50)),
+            )
 
     def _dibujar_vector_2d(self, ax, vector):
         """
@@ -296,34 +301,41 @@ class TransformAnimator:
         flecha = FancyArrowPatch(
             posA=origin,
             posB=end,
-            arrowstyle="-|>",
-            mutation_scale=18,
+            arrowstyle=vector.get("arrowstyle", "-|>"),
+            mutation_scale=float(vector.get("mutation_scale", 18)),
             linewidth=linewidth,
+            linestyle=vector.get("linestyle", "-"),
             color=color,
             alpha=alpha,
-            zorder=42,
+            zorder=float(vector.get("zorder", 42)),
         )
         ax.add_patch(flecha)
 
-        ax.scatter(
-            [origin[0]],
-            [origin[1]],
-            s=20,
-            color=color,
-            alpha=alpha,
-            zorder=43,
-        )
+        if vector.get("show_origin", True):
+            ax.scatter(
+                [origin[0]],
+                [origin[1]],
+                s=float(vector.get("origin_size", 20)),
+                color=color,
+                alpha=alpha,
+                zorder=float(vector.get("zorder", 42)) + 1,
+            )
 
-        ax.text(
-            end[0] + 0.14,
-            end[1] + 0.10,
-            name,
-            fontsize=11,
-            fontweight="bold",
-            color=color,
-            alpha=alpha,
-            zorder=50,
-        )
+        if name:
+            label_offset = self._vector_2d(
+                vector.get("label_offset", (0.14, 0.10)),
+                "vector.label_offset",
+            )
+            ax.text(
+                end[0] + label_offset[0],
+                end[1] + label_offset[1],
+                name,
+                fontsize=float(vector.get("fontsize", 11)),
+                fontweight=vector.get("fontweight", "bold"),
+                color=color,
+                alpha=alpha,
+                zorder=float(vector.get("zorder", 42)) + 8,
+            )
 
     def _dibujar_segmento_2d(self, ax, segment):
         """
@@ -341,6 +353,110 @@ class TransformAnimator:
             color=segment.get("color", "#777777"),
             alpha=float(segment.get("alpha", 0.7)),
             zorder=12,
+        )
+
+    def _dibujar_polilinea_2d(self, ax, polyline):
+        """
+        Dibuja una polilínea formada por una secuencia de puntos 2D.
+
+        Este elemento es útil para cuadrículas, contornos y trayectorias. La
+        geometría se calcula en el script del temario; el animador solo dibuja.
+        """
+
+        points = np.asarray(polyline["points"], dtype=float)
+
+        if points.ndim != 2 or points.shape[1] != 2:
+            raise ValueError("polyline.points debe tener forma (N, 2).")
+
+        ax.plot(
+            points[:, 0],
+            points[:, 1],
+            linestyle=polyline.get("linestyle", "-"),
+            linewidth=float(polyline.get("linewidth", 1.2)),
+            color=polyline.get("color", "#777777"),
+            alpha=float(polyline.get("alpha", 0.65)),
+            zorder=float(polyline.get("zorder", 10)),
+        )
+
+    def _dibujar_poligono_2d(self, ax, polygon):
+        """
+        Dibuja un polígono 2D, por ejemplo el paralelogramo de una base.
+        """
+
+        points = np.asarray(polygon["points"], dtype=float)
+
+        if points.ndim != 2 or points.shape[1] != 2 or len(points) < 3:
+            raise ValueError("polygon.points debe tener forma (N, 2), N >= 3.")
+
+        patch = Polygon(
+            points,
+            closed=bool(polygon.get("closed", True)),
+            facecolor=polygon.get("facecolor", "#D9EAF7"),
+            edgecolor=polygon.get("edgecolor", "#4472A8"),
+            linewidth=float(polygon.get("linewidth", 1.5)),
+            linestyle=polygon.get("linestyle", "-"),
+            alpha=float(polygon.get("alpha", 0.28)),
+            zorder=float(polygon.get("zorder", 8)),
+        )
+        ax.add_patch(patch)
+
+    def _dibujar_texto_2d(self, ax, text_item):
+        """
+        Dibuja una anotación breve dentro de la escena geométrica.
+        """
+
+        position = self._vector_2d(text_item["position"], "text.position")
+        text = str(text_item.get("text", ""))
+
+        if not text:
+            return
+
+        kwargs = {
+            "fontsize": float(text_item.get("fontsize", 10)),
+            "fontweight": text_item.get("fontweight", "normal"),
+            "color": text_item.get("color", "#222222"),
+            "alpha": float(text_item.get("alpha", 1.0)),
+            "ha": text_item.get("ha", "left"),
+            "va": text_item.get("va", "center"),
+            "zorder": float(text_item.get("zorder", 60)),
+        }
+
+        bbox = text_item.get("bbox")
+        if bbox is not None:
+            kwargs["bbox"] = bbox
+
+        ax.text(position[0], position[1], text, **kwargs)
+
+    @staticmethod
+    def _crear_elemento_leyenda(item):
+        """
+        Construye un Line2D sencillo a partir de una especificación de leyenda.
+        """
+
+        kind = item.get("kind", "line")
+        label = item.get("label", "")
+        color = item.get("color", "#555555")
+
+        if kind == "point":
+            return Line2D(
+                [0],
+                [0],
+                marker=item.get("marker", "o"),
+                color="none",
+                markerfacecolor=color,
+                markeredgecolor=item.get("edgecolor", "#222222"),
+                markersize=float(item.get("markersize", 8)),
+                label=label,
+            )
+
+        return Line2D(
+            [0],
+            [0],
+            color=color,
+            linewidth=float(item.get("linewidth", 2.5)),
+            linestyle=item.get("linestyle", "-"),
+            marker=item.get("marker", None),
+            label=label,
         )
 
     def _dibujar_mensaje(self, ax, state):
@@ -395,8 +511,9 @@ class TransformAnimator:
 
         lines = list(state.get("info_lines", []))
 
-        y = 0.89
-        line_height = 0.052
+        y = float(state.get("info_start_y", 0.89))
+        line_height = float(state.get("info_line_height", 0.052))
+        info_fontsize = float(state.get("info_fontsize", 10))
 
         for line in lines:
             if isinstance(line, dict):
@@ -414,7 +531,7 @@ class TransformAnimator:
                 0.04,
                 y,
                 text,
-                fontsize=10,
+                fontsize=info_fontsize,
                 fontweight="bold" if bold else "normal",
                 color=color,
                 family="monospace" if line and not isinstance(line, dict) else None,
@@ -452,6 +569,12 @@ class TransformAnimator:
 
         self._configurar_escena(scene_ax, limits)
 
+        for polygon in state.get("polygons", []):
+            self._dibujar_poligono_2d(scene_ax, polygon)
+
+        for polyline in state.get("polylines", []):
+            self._dibujar_polilinea_2d(scene_ax, polyline)
+
         for segment in state.get("segments", []):
             self._dibujar_segmento_2d(scene_ax, segment)
 
@@ -464,44 +587,55 @@ class TransformAnimator:
         for vector in state.get("vectors", []):
             self._dibujar_vector_2d(scene_ax, vector)
 
+        for text_item in state.get("texts", []):
+            self._dibujar_texto_2d(scene_ax, text_item)
+
         self._dibujar_mensaje(scene_ax, state)
         self._dibujar_info(info_ax, state)
 
-        # Leyenda mínima y genérica. Se muestra únicamente cuando el estado
-        # contiene puntos o vectores.
         legend_elements = []
 
-        if state.get("points"):
-            legend_elements.append(
-                Line2D(
-                    [0],
-                    [0],
-                    marker="o",
-                    color="none",
-                    markerfacecolor="#7B2CBF",
-                    markeredgecolor="#222222",
-                    markersize=8,
-                    label="Punto geométrico",
+        if state.get("legend"):
+            legend_elements = [
+                self._crear_elemento_leyenda(item)
+                for item in state["legend"]
+                if item.get("label")
+            ]
+        else:
+            # Compatibilidad con las primeras demos: si no se proporciona una
+            # leyenda específica se mantiene la leyenda mínima original.
+            if state.get("points"):
+                legend_elements.append(
+                    Line2D(
+                        [0],
+                        [0],
+                        marker="o",
+                        color="none",
+                        markerfacecolor="#7B2CBF",
+                        markeredgecolor="#222222",
+                        markersize=8,
+                        label="Punto geométrico",
+                    )
                 )
-            )
 
-        if state.get("vectors"):
-            legend_elements.append(
-                Line2D(
-                    [0],
-                    [0],
-                    color="#E07A1F",
-                    linewidth=3,
-                    label="Vector geométrico",
+            if state.get("vectors"):
+                legend_elements.append(
+                    Line2D(
+                        [0],
+                        [0],
+                        color="#E07A1F",
+                        linewidth=3,
+                        label="Vector geométrico",
+                    )
                 )
-            )
 
         if legend_elements:
             scene_ax.legend(
                 handles=legend_elements,
-                loc="upper left",
-                fontsize=9,
+                loc=state.get("legend_loc", "upper left"),
+                fontsize=float(state.get("legend_fontsize", 9)),
                 framealpha=0.95,
+                ncol=int(state.get("legend_ncol", 1)),
             )
 
     def _guardar_video(self, animation, video_path, fps, dpi):
@@ -573,8 +707,8 @@ class TransformAnimator:
         ----------
         states:
             Lista de diccionarios. Cada estado puede contener `frames`,
-            `points`, `vectors`, `segments`, `message`, `info_lines` y
-            `phase`.
+            `points`, `vectors`, `segments`, `polylines`, `polygons`, `texts`,
+            `legend`, `message`, `info_lines` y `phase`.
         title:
             Título general de la figura.
         limits:
