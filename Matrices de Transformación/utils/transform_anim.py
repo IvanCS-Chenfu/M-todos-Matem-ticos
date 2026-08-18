@@ -7,6 +7,7 @@ import numpy as np
 from matplotlib.animation import FFMpegWriter, FuncAnimation
 from matplotlib.lines import Line2D
 from matplotlib.patches import Arc, FancyArrowPatch, Polygon
+from mpl_toolkits.mplot3d.art3d import Poly3DCollection
 
 
 class TransformAnimator:
@@ -798,6 +799,548 @@ class TransformAnimator:
                 limits,
             )
 
+            return []
+
+        self.animation = FuncAnimation(
+            fig,
+            actualizar,
+            frames=len(states),
+            interval=self.interval,
+            repeat=repeat,
+            blit=False,
+        )
+
+        if fps is None:
+            fps = max(1, int(round(1000.0 / self.interval)))
+
+        if video_path is not None:
+            self._guardar_video(
+                self.animation,
+                video_path=video_path,
+                fps=fps,
+                dpi=dpi,
+            )
+
+        if show:
+            plt.show()
+        else:
+            plt.close(fig)
+
+        return self.animation
+
+    # ------------------------------------------------------------------
+    # Visualización 3D
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _vector_3d(valor, nombre):
+        """
+        Convierte un valor a vector NumPy 3D y valida sus dimensiones.
+        """
+
+        vector = np.asarray(valor, dtype=float).reshape(-1)
+
+        if vector.shape != (3,):
+            raise ValueError(
+                f"{nombre} debe contener exactamente tres componentes. "
+                f"Se recibió una forma {vector.shape}."
+            )
+
+        return vector
+
+    @staticmethod
+    def _matriz_rotacion_3d(valor, nombre):
+        """
+        Convierte un valor a matriz de orientación 3x3.
+        """
+
+        matriz = np.asarray(valor, dtype=float)
+
+        if matriz.shape != (3, 3):
+            raise ValueError(
+                f"{nombre} debe tener forma (3, 3). "
+                f"Se recibió una forma {matriz.shape}."
+            )
+
+        return matriz
+
+    def _preparar_figura_3d(self, title):
+        """
+        Crea una figura con una escena 3D y un panel lateral de información.
+        """
+
+        fig = plt.figure(figsize=self.figsize)
+
+        grid = fig.add_gridspec(
+            1,
+            2,
+            width_ratios=[3.5, 1.55],
+            wspace=0.05,
+        )
+
+        scene_ax = fig.add_subplot(grid[0], projection="3d")
+        info_ax = fig.add_subplot(grid[1])
+
+        fig.suptitle(
+            title,
+            fontsize=15,
+            fontweight="bold",
+        )
+
+        return fig, scene_ax, info_ax
+
+    @staticmethod
+    def _configurar_escena_3d(ax, limits, view):
+        """
+        Configura límites, etiquetas y cámara de una escena cartesiana 3D.
+        """
+
+        x_min, x_max, y_min, y_max, z_min, z_max = limits
+
+        ax.clear()
+        ax.set_xlim(x_min, x_max)
+        ax.set_ylim(y_min, y_max)
+        ax.set_zlim(z_min, z_max)
+
+        ax.set_xlabel("x")
+        ax.set_ylabel("y")
+        ax.set_zlabel("z")
+
+        ax.grid(True, alpha=0.22)
+        ax.view_init(
+            elev=float(view[0]),
+            azim=float(view[1]),
+        )
+
+        if hasattr(ax, "set_box_aspect"):
+            ax.set_box_aspect(
+                (
+                    max(x_max - x_min, 1e-9),
+                    max(y_max - y_min, 1e-9),
+                    max(z_max - z_min, 1e-9),
+                )
+            )
+
+        try:
+            ax.set_proj_type("persp")
+        except AttributeError:
+            pass
+
+    def _dibujar_frame_3d(self, ax, frame):
+        """
+        Dibuja un sistema de referencia cartesiano 3D.
+
+        El frame se define mediante un origen y una matriz de orientación R cuyas
+        columnas son los ejes x, y, z expresados en las coordenadas de la escena.
+        """
+
+        name = frame.get("name", "frame")
+        origin = self._vector_3d(
+            frame.get("origin", (0.0, 0.0, 0.0)),
+            "frame.origin",
+        )
+        rotation = self._matriz_rotacion_3d(
+            frame.get("rotation", np.eye(3)),
+            "frame.rotation",
+        )
+
+        length = float(frame.get("length", 1.5))
+        alpha = float(frame.get("alpha", 1.0))
+        linewidth = float(frame.get("linewidth", 2.5))
+        colors = frame.get(
+            "colors",
+            ("#C63C3C", "#2A8F5B", "#1F77B4"),
+        )
+        labels = frame.get("axis_labels", ("x", "y", "z"))
+
+        for indice, (color, label) in enumerate(zip(colors, labels)):
+            direction = length * rotation[:, indice]
+
+            ax.quiver(
+                origin[0],
+                origin[1],
+                origin[2],
+                direction[0],
+                direction[1],
+                direction[2],
+                color=color,
+                linewidth=linewidth,
+                alpha=alpha,
+                arrow_length_ratio=0.12,
+                normalize=False,
+            )
+
+            end = origin + direction
+            axis_name = f"{label}_{name}" if name else str(label)
+
+            ax.text(
+                end[0],
+                end[1],
+                end[2],
+                f" {axis_name}",
+                fontsize=float(frame.get("fontsize", 9)),
+                fontweight="bold",
+                color=color,
+                alpha=alpha,
+            )
+
+        ax.scatter(
+            [origin[0]],
+            [origin[1]],
+            [origin[2]],
+            s=float(frame.get("origin_size", 28)),
+            color=frame.get("origin_color", "#222222"),
+            alpha=alpha,
+        )
+
+        if name:
+            offset = self._vector_3d(
+                frame.get("label_offset", (0.10, 0.10, -0.12)),
+                "frame.label_offset",
+            )
+            label_position = origin + offset
+            ax.text(
+                label_position[0],
+                label_position[1],
+                label_position[2],
+                f"{{{name}}}",
+                fontsize=float(frame.get("label_fontsize", 9)),
+                fontweight="bold",
+                color=frame.get("label_color", "#222222"),
+                alpha=alpha,
+            )
+
+    def _dibujar_punto_3d(self, ax, point):
+        """
+        Dibuja un punto geométrico 3D.
+        """
+
+        position = self._vector_3d(point["position"], "point.position")
+        name = point.get("name", "P")
+        color = point.get("color", "#7B2CBF")
+        alpha = float(point.get("alpha", 1.0))
+
+        ax.scatter(
+            [position[0]],
+            [position[1]],
+            [position[2]],
+            s=float(point.get("size", 70)),
+            color=color,
+            edgecolor=point.get("edgecolor", "#222222"),
+            linewidth=float(point.get("linewidth", 0.8)),
+            alpha=alpha,
+            depthshade=False,
+        )
+
+        if name:
+            offset = self._vector_3d(
+                point.get("label_offset", (0.12, 0.12, 0.12)),
+                "point.label_offset",
+            )
+            label_position = position + offset
+            ax.text(
+                label_position[0],
+                label_position[1],
+                label_position[2],
+                name,
+                fontsize=float(point.get("fontsize", 10)),
+                fontweight=point.get("fontweight", "bold"),
+                color=color,
+                alpha=alpha,
+            )
+
+    def _dibujar_vector_3d(self, ax, vector):
+        """
+        Dibuja un vector 3D desde un punto de anclaje.
+        """
+
+        origin = self._vector_3d(
+            vector.get("origin", (0.0, 0.0, 0.0)),
+            "vector.origin",
+        )
+        value = self._vector_3d(vector["value"], "vector.value")
+        name = vector.get("name", "v")
+        color = vector.get("color", "#E07A1F")
+        alpha = float(vector.get("alpha", 1.0))
+        linewidth = float(vector.get("linewidth", 2.8))
+
+        if np.linalg.norm(value) > 1e-12:
+            ax.quiver(
+                origin[0],
+                origin[1],
+                origin[2],
+                value[0],
+                value[1],
+                value[2],
+                color=color,
+                linewidth=linewidth,
+                alpha=alpha,
+                arrow_length_ratio=float(vector.get("arrow_length_ratio", 0.10)),
+                normalize=False,
+            )
+
+        if vector.get("show_origin", True):
+            ax.scatter(
+                [origin[0]],
+                [origin[1]],
+                [origin[2]],
+                s=float(vector.get("origin_size", 16)),
+                color=color,
+                alpha=alpha,
+                depthshade=False,
+            )
+
+        if name:
+            end = origin + value
+            offset = self._vector_3d(
+                vector.get("label_offset", (0.12, 0.10, 0.10)),
+                "vector.label_offset",
+            )
+            label_position = end + offset
+            ax.text(
+                label_position[0],
+                label_position[1],
+                label_position[2],
+                name,
+                fontsize=float(vector.get("fontsize", 10)),
+                fontweight=vector.get("fontweight", "bold"),
+                color=color,
+                alpha=alpha,
+            )
+
+    def _dibujar_segmento_3d(self, ax, segment):
+        """
+        Dibuja un segmento auxiliar 3D.
+        """
+
+        start = self._vector_3d(segment["start"], "segment.start")
+        end = self._vector_3d(segment["end"], "segment.end")
+
+        ax.plot(
+            [start[0], end[0]],
+            [start[1], end[1]],
+            [start[2], end[2]],
+            linestyle=segment.get("linestyle", "--"),
+            linewidth=float(segment.get("linewidth", 1.4)),
+            color=segment.get("color", "#777777"),
+            alpha=float(segment.get("alpha", 0.7)),
+        )
+
+    def _dibujar_polilinea_3d(self, ax, polyline):
+        """
+        Dibuja una polilínea 3D, útil para trayectorias, arcos y contornos.
+        """
+
+        points = np.asarray(polyline["points"], dtype=float)
+
+        if points.ndim != 2 or points.shape[1] != 3:
+            raise ValueError("polyline.points debe tener forma (N, 3).")
+
+        ax.plot(
+            points[:, 0],
+            points[:, 1],
+            points[:, 2],
+            linestyle=polyline.get("linestyle", "-"),
+            linewidth=float(polyline.get("linewidth", 1.4)),
+            color=polyline.get("color", "#777777"),
+            alpha=float(polyline.get("alpha", 0.75)),
+        )
+
+    def _dibujar_malla_3d(self, ax, mesh):
+        """
+        Dibuja una malla poligonal 3D a partir de vértices y caras.
+
+        `faces` es una lista de listas de índices sobre `vertices`.
+        """
+
+        vertices = np.asarray(mesh["vertices"], dtype=float)
+
+        if vertices.ndim != 2 or vertices.shape[1] != 3:
+            raise ValueError("mesh.vertices debe tener forma (N, 3).")
+
+        faces = list(mesh.get("faces", []))
+
+        if not faces:
+            raise ValueError("mesh.faces debe contener al menos una cara.")
+
+        polygons = [
+            vertices[np.asarray(face, dtype=int)]
+            for face in faces
+        ]
+
+        collection = Poly3DCollection(
+            polygons,
+            facecolors=mesh.get("facecolor", "#9CC7E8"),
+            edgecolors=mesh.get("edgecolor", "#315A7D"),
+            linewidths=float(mesh.get("linewidth", 1.0)),
+            alpha=float(mesh.get("alpha", 0.30)),
+        )
+        ax.add_collection3d(collection)
+
+    def _dibujar_texto_3d(self, ax, text_item):
+        """
+        Dibuja una anotación breve en coordenadas 3D.
+        """
+
+        position = self._vector_3d(text_item["position"], "text.position")
+        text = str(text_item.get("text", ""))
+
+        if not text:
+            return
+
+        ax.text(
+            position[0],
+            position[1],
+            position[2],
+            text,
+            fontsize=float(text_item.get("fontsize", 9)),
+            fontweight=text_item.get("fontweight", "normal"),
+            color=text_item.get("color", "#222222"),
+            alpha=float(text_item.get("alpha", 1.0)),
+        )
+
+    @staticmethod
+    def _dibujar_mensaje_3d(ax, state):
+        """
+        Añade el mensaje pedagógico en la zona inferior de una escena 3D.
+        """
+
+        message = state.get("message", "")
+
+        if not message:
+            return
+
+        message = textwrap.fill(str(message), width=74)
+
+        ax.text2D(
+            0.50,
+            0.02,
+            message,
+            transform=ax.transAxes,
+            fontsize=9.3,
+            ha="center",
+            va="bottom",
+            bbox={
+                "boxstyle": "round,pad=0.45",
+                "fc": "white",
+                "ec": "#777777",
+                "alpha": 0.96,
+            },
+        )
+
+    def _dibujar_estado_3d(self, scene_ax, info_ax, state, limits, view):
+        """
+        Dibuja por completo un estado de una animación geométrica 3D.
+        """
+
+        current_view = state.get("view", view)
+        self._configurar_escena_3d(scene_ax, limits, current_view)
+
+        for mesh in state.get("meshes3d", []):
+            self._dibujar_malla_3d(scene_ax, mesh)
+
+        for polyline in state.get("polylines3d", []):
+            self._dibujar_polilinea_3d(scene_ax, polyline)
+
+        for segment in state.get("segments3d", []):
+            self._dibujar_segmento_3d(scene_ax, segment)
+
+        for frame in state.get("frames3d", []):
+            self._dibujar_frame_3d(scene_ax, frame)
+
+        for point in state.get("points3d", []):
+            self._dibujar_punto_3d(scene_ax, point)
+
+        for vector in state.get("vectors3d", []):
+            self._dibujar_vector_3d(scene_ax, vector)
+
+        for text_item in state.get("texts3d", []):
+            self._dibujar_texto_3d(scene_ax, text_item)
+
+        self._dibujar_mensaje_3d(scene_ax, state)
+        self._dibujar_info(info_ax, state)
+
+        if state.get("legend"):
+            legend_elements = [
+                self._crear_elemento_leyenda(item)
+                for item in state["legend"]
+                if item.get("label")
+            ]
+
+            if legend_elements:
+                scene_ax.legend(
+                    handles=legend_elements,
+                    loc=state.get("legend_loc", "upper left"),
+                    fontsize=float(state.get("legend_fontsize", 8.5)),
+                    framealpha=0.95,
+                    ncol=int(state.get("legend_ncol", 1)),
+                )
+
+    def animate_3d_states(
+        self,
+        states,
+        title,
+        limits=(-4.0, 4.0, -4.0, 4.0, -3.0, 4.0),
+        view=(24.0, -58.0),
+        final_image_path=None,
+        video_path=None,
+        repeat=False,
+        fps=None,
+        dpi=125,
+        show=True,
+    ):
+        """
+        Anima una secuencia genérica de estados geométricos 3D.
+
+        Cada estado puede contener:
+        - frames3d,
+        - points3d,
+        - vectors3d,
+        - segments3d,
+        - polylines3d,
+        - meshes3d,
+        - texts3d,
+        - legend,
+        - message,
+        - info_lines,
+        - phase.
+
+        Los cálculos geométricos pertenecen a los scripts del temario; este
+        método se limita a representar y exportar los estados recibidos.
+        """
+
+        states = list(states)
+
+        if not states:
+            raise ValueError("La animación 3D necesita al menos un estado.")
+
+        fig, scene_ax, info_ax = self._preparar_figura_3d(title)
+
+        if final_image_path is not None:
+            self._dibujar_estado_3d(
+                scene_ax,
+                info_ax,
+                states[-1],
+                limits,
+                view,
+            )
+            final_image_path = Path(final_image_path).expanduser().resolve()
+            self._crear_directorio_salida(final_image_path)
+            fig.savefig(
+                final_image_path,
+                dpi=dpi,
+                bbox_inches="tight",
+            )
+            print(f"\nImagen final guardada en:\n  {final_image_path}")
+
+        def actualizar(frame_index):
+            self._dibujar_estado_3d(
+                scene_ax,
+                info_ax,
+                states[frame_index],
+                limits,
+                view,
+            )
             return []
 
         self.animation = FuncAnimation(
