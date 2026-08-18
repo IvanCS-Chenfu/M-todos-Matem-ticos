@@ -6,7 +6,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 from matplotlib.animation import FFMpegWriter, FuncAnimation
 from matplotlib.lines import Line2D
-from matplotlib.patches import FancyArrowPatch, Polygon
+from matplotlib.patches import Arc, FancyArrowPatch, Polygon
 
 
 class TransformAnimator:
@@ -355,6 +355,38 @@ class TransformAnimator:
             zorder=12,
         )
 
+    def _dibujar_arco_2d(self, ax, arc):
+        """
+        Dibuja un arco 2D, útil para representar ángulos de rotación.
+
+        El diccionario `arc` admite:
+        - center: centro del arco,
+        - radius: radio si se quiere un arco circular,
+        - width / height: dimensiones opcionales para un arco elíptico,
+        - theta1 / theta2: ángulos inicial y final en grados,
+        - color, linewidth, linestyle, alpha y zorder.
+        """
+
+        center = self._vector_2d(arc.get("center", (0.0, 0.0)), "arc.center")
+        radius = float(arc.get("radius", 1.0))
+        width = float(arc.get("width", 2.0 * radius))
+        height = float(arc.get("height", 2.0 * radius))
+
+        patch = Arc(
+            xy=center,
+            width=width,
+            height=height,
+            angle=float(arc.get("angle", 0.0)),
+            theta1=float(arc.get("theta1", 0.0)),
+            theta2=float(arc.get("theta2", 90.0)),
+            color=arc.get("color", "#7B2CBF"),
+            linewidth=float(arc.get("linewidth", 2.0)),
+            linestyle=arc.get("linestyle", "-"),
+            alpha=float(arc.get("alpha", 0.9)),
+            zorder=float(arc.get("zorder", 25)),
+        )
+        ax.add_patch(patch)
+
     def _dibujar_polilinea_2d(self, ax, polyline):
         """
         Dibuja una polilínea formada por una secuencia de puntos 2D.
@@ -578,6 +610,9 @@ class TransformAnimator:
         for segment in state.get("segments", []):
             self._dibujar_segmento_2d(scene_ax, segment)
 
+        for arc in state.get("arcs", []):
+            self._dibujar_arco_2d(scene_ax, arc)
+
         for frame in state.get("frames", []):
             self._dibujar_frame_2d(scene_ax, frame)
 
@@ -707,7 +742,7 @@ class TransformAnimator:
         ----------
         states:
             Lista de diccionarios. Cada estado puede contener `frames`,
-            `points`, `vectors`, `segments`, `polylines`, `polygons`, `texts`,
+            `points`, `vectors`, `segments`, `arcs`, `polylines`, `polygons`, `texts`,
             `legend`, `message`, `info_lines` y `phase`.
         title:
             Título general de la figura.
